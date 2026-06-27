@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 import {
-  AlertTriangle, Loader2, Send, Megaphone, Pin, PinOff, EyeOff, Eye, Trash2, FileText, History, RotateCcw,
+  AlertTriangle, Loader2, Send, Megaphone, Pin, PinOff, EyeOff, Eye, Trash2, FileText, History, RotateCcw, Pencil,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -245,6 +245,28 @@ export function BroadcastManager() {
     toast.success(`Loaded template: ${t.name}`);
   };
 
+  // Edit = load an existing broadcast into the composer. Saving from compose
+  // runs the normal createMut, which does NOT pass campaign_id, so the server
+  // mints a fresh broadcast_id AND a fresh campaign_id — the original record
+  // and its campaign history are preserved untouched. Only the explicit
+  // Resend action re-uses the original campaign_id.
+  const editBroadcast = (b: Broadcast) => {
+    setSubject(b.subject);
+    setBody(b.body);
+    setPriority(b.priority);
+    setMethods([...(b.delivery_methods ?? ["inbox"])]);
+    setTarget(b.target_kind);
+    const f = (b.target_filter ?? {}) as Record<string, unknown>;
+    if (b.target_kind === "new_users" && typeof f.preset === "string") setNewPreset(f.preset);
+    if (b.target_kind === "users" && Array.isArray(f.user_ids)) {
+      setUserIds((f.user_ids as string[]).join(", "));
+    }
+    setSkipDuplicates(false);
+    setTab("compose");
+    toast.success("Loaded into composer — saving will create a brand-new broadcast.");
+    if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
@@ -414,7 +436,10 @@ export function BroadcastManager() {
                     </p>
                   </div>
                   <div className="flex shrink-0 gap-1">
-                    <Button size="sm" variant="ghost" title="Resend (skips users who already received this broadcast)" onClick={async () => {
+                    <Button size="sm" variant="ghost" title="Edit (creates a brand-new broadcast with a new campaign_id)" onClick={() => editBroadcast(b)}>
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button size="sm" variant="ghost" title="Resend (reuses this broadcast's campaign_id; skip-duplicates respected)" onClick={async () => {
                       if (!confirm("Re-send this broadcast?\n\nUsers who already received it (per delivery method) will be skipped automatically.")) return;
                       try {
                         const r = await createFn({ data: {

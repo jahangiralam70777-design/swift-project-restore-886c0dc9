@@ -377,58 +377,43 @@ export const createBroadcast = createServerFn({ method: "POST" })
     }
 
     if (methods.includes("chat") && perMethodIds.chat.length > 0) {
-      const BROADCAST_SUBJECT = "Admin Broadcasts";
+      // Create one fresh conversation per recipient for THIS broadcast so the
+      // student widget shows it as a distinct, clearly-labelled thread (and
+      // so identity-based dedupe at the broadcast layer is the source of
+      // truth, not chat-thread re-use). sender_type='staff' lets the
+      // rollup trigger increment unread_for_user, which drives the
+      // launcher's unread badge on the student side.
+      const chatSubject = `📢 ${data.subject.trim()}`.slice(0, 200);
+      const preview = data.subject.trim().slice(0, 200);
+      const messageBody = `📢 FROM ADMIN\n${data.subject.trim()}\n\n${data.body.trim()}`;
       for (const uidChunk of chunks(perMethodIds.chat, 200)) {
-        const { data: existing, error: exErr } = await asAny(supabaseAdmin)
+        const { data: created, error: cErr } = await asAny(supabaseAdmin)
           .from("live_chat_conversations")
-          .select("id,user_id")
-          .in("user_id", uidChunk)
-          .eq("subject", BROADCAST_SUBJECT);
-        if (exErr) throw new Error(`Chat lookup failed: ${exErr.message}`);
-        const byUser = new Map<string, string>(
-          ((existing ?? []) as Array<{ id: string; user_id: string }>).map((c) => [c.user_id, c.id]),
-        );
-        const missing = uidChunk.filter((u) => !byUser.has(u));
-        if (missing.length > 0) {
-          const { data: created, error: cErr } = await asAny(supabaseAdmin)
-            .from("live_chat_conversations")
-            .insert(missing.map((uid) => ({
-              user_id: uid,
-              subject: BROADCAST_SUBJECT,
-              status: "open",
-              last_message_preview: data.subject.trim(),
-              last_message_at: now,
-            })))
-            .select("id,user_id");
-          if (cErr) throw new Error(`Chat delivery failed: ${cErr.message}`);
-          for (const c of (created ?? []) as Array<{ id: string; user_id: string }>) {
-            byUser.set(c.user_id, c.id);
-          }
-        }
-        const messages = uidChunk
-          .map((uid) => byUser.get(uid))
-          .filter((cid): cid is string => !!cid)
-          .map((cid) => ({
-            conversation_id: cid,
-            sender_type: "system",
-            sender_user_id: context.userId,
-            body: `📢 FROM ADMIN\n${data.subject.trim()}\n\n${data.body.trim()}`,
-            delivered_at: now,
-          }));
-        if (messages.length) {
-          const { error: mErr } = await asAny(supabaseAdmin).from("live_chat_messages").insert(messages);
-          if (mErr) throw new Error(`Chat message delivery failed: ${mErr.message}`);
-          for (const cid of new Set(messages.map((m) => m.conversation_id))) {
-            await asAny(supabaseAdmin)
-              .from("live_chat_conversations")
-              .update({
-                last_message_at: now,
-                last_message_preview: data.subject.trim(),
-                unread_for_user: 1,
-              })
-              .eq("id", cid);
-          }
-        }
+          .insert(uidChunk.map((uid) => ({
+            user_id: uid,
+            subject: chatSubject,
+            title: chatSubject,
+            status: "waiting_user",
+            last_message_preview: preview,
+            last_message_at: now,
+            unread_for_user: 1,
+            metadata: { source: "broadcast", broadcast_id: row.id, campaign_id: campaignId },
+          })))
+          .select("id,user_id");
+        if (cErr) throw new Error(`Chat delivery failed: ${cErr.message}`);
+        const convs = (created ?? []) as Array<{ id: string; user_id: string }>;
+        if (convs.length === 0) continue;
+        const messages = convs.map((c) => ({
+          conversation_id: c.id,
+          sender_type: "staff",
+          sender_user_id: context.userId,
+          body: messageBody,
+          delivered_at: now,
+        }));
+        const { error: mErr } = await asAny(supabaseAdmin)
+          .from("live_chat_messages")
+          .insert(messages);
+        if (mErr) throw new Error(`Chat message delivery failed: ${mErr.message}`);
       }
     }
 

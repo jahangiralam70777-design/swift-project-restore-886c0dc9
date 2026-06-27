@@ -140,6 +140,40 @@ async function ensureChatAdmin(_supabase: any, userId: string) {
   if (!r.isAdmin && !r.isSuperAdmin) throw new Error("Forbidden: admin role required");
 }
 
+export type MyChatPermissions = {
+  userId: string;
+  roles: string[];
+  isAuthenticated: boolean;
+  isSuperAdmin: boolean;
+  isAdmin: boolean;
+  isModerator: boolean;
+  isStaff: boolean;
+  canReply: boolean;
+  canAssign: boolean;
+  canDelete: boolean;
+  canManageSettings: boolean;
+};
+
+export const getMyChatPermissions = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator(noInput)
+  .handler(async ({ context }) => {
+    const r = await loadRoles(context.userId);
+    return {
+      userId: context.userId,
+      roles: Array.from(r.roles),
+      isAuthenticated: true,
+      isSuperAdmin: r.isSuperAdmin,
+      isAdmin: r.isAdmin,
+      isModerator: r.isModerator,
+      isStaff: r.isStaff,
+      canReply: r.isStaff,
+      canAssign: r.isSuperAdmin,
+      canDelete: r.isAdmin || r.isSuperAdmin,
+      canManageSettings: r.isAdmin || r.isSuperAdmin,
+    } satisfies MyChatPermissions;
+  });
+
 const sanitizeBody = (s: string) =>
   s.replace(/[\u0000-\u001F\u007F]/g, "").trim().slice(0, 4000);
 
@@ -731,6 +765,14 @@ export const adminSendReply = createServerFn({ method: "POST" })
     const body = sanitizeBody(data.body);
     if (!body) throw new Error("Message empty");
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: conv, error: convError } = await asAny(supabaseAdmin)
+      .from("live_chat_conversations")
+      .select("id,is_blocked")
+      .eq("id", data.conversation_id)
+      .maybeSingle();
+    if (convError) throw new Error(convError.message);
+    if (!conv) throw new Error("Conversation not found");
+    if (conv.is_blocked) throw new Error("This conversation is blocked");
     const { data: msg, error } = await asAny(supabaseAdmin)
       .from("live_chat_messages")
       .insert({

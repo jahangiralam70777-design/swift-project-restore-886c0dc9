@@ -3,8 +3,10 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 
 export type VerifyAdminAccessResult = {
   isAdmin: boolean;
+  isModerator: boolean;
+  isStaff: boolean;
   userId: string;
-  role: "admin" | "super_admin" | null;
+  role: "admin" | "super_admin" | "moderator" | null;
   sources?: {
     databaseRoles: string[];
     jwtRole: string | null;
@@ -16,9 +18,10 @@ export type VerifyAdminAccessResult = {
   reason?: string;
 };
 
-function pickAdminRole(roles: string[]): "admin" | "super_admin" | null {
+function pickAdminRole(roles: string[]): "admin" | "super_admin" | "moderator" | null {
   if (roles.includes("super_admin")) return "super_admin";
   if (roles.includes("admin")) return "admin";
+  if (roles.includes("moderator")) return "moderator";
   return null;
 }
 
@@ -48,7 +51,7 @@ export const verifyAdminAccess = createServerFn({ method: "GET" })
         .from("user_roles")
         .select("role")
         .eq("user_id", userId)
-        .in("role", ["admin", "super_admin"]);
+        .in("role", ["admin", "super_admin", "moderator"]);
       if (error) throw error;
       const databaseRoles = (data ?? []).map((r: { role: string }) => r.role);
       const role = pickAdminRole(databaseRoles);
@@ -80,7 +83,9 @@ export const verifyAdminAccess = createServerFn({ method: "GET" })
         profileRole,
       };
       console.info("[admin-auth] role sources", { userId, ...sources });
-      return { isAdmin: role !== null, role, userId, sources };
+      const isAdmin = role === "admin" || role === "super_admin";
+      const isModerator = role === "moderator";
+      return { isAdmin, isModerator, isStaff: isAdmin || isModerator, role, userId, sources };
     } catch (error) {
       console.warn("[verifyAdminAccess] role lookup degraded", {
         userId,
@@ -88,6 +93,8 @@ export const verifyAdminAccess = createServerFn({ method: "GET" })
       });
       return {
         isAdmin: false,
+        isModerator: false,
+        isStaff: false,
         userId,
         role: null,
         degraded: true,

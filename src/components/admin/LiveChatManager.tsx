@@ -199,6 +199,7 @@ export function LiveChatManager() {
       setReply("");
       qc.invalidateQueries({ queryKey: ["admin", "chat", "messages", selectedId] });
       qc.invalidateQueries({ queryKey: ["admin", "chat", "list"] });
+      qc.invalidateQueries({ queryKey: ["chat", "my-conversations"] });
     },
     onError: (e) => toast.error((e as Error).message),
   });
@@ -285,6 +286,8 @@ export function LiveChatManager() {
   const messages = msgsQ.data ?? [];
   const notes = notesQ.data ?? [];
   const conversations = convsQ.data ?? [];
+  const canDeleteConversation = perms.isAdmin || perms.isSuperAdmin;
+  const canDeleteMessage = perms.isSuperAdmin;
 
   const exportConv = () => {
     if (!conv) return;
@@ -301,7 +304,7 @@ export function LiveChatManager() {
   return (
     <div className="grid h-[calc(100dvh-10rem)] min-h-[480px] grid-cols-12 gap-3 overflow-hidden rounded-2xl border border-border bg-card text-card-foreground">
       {/* ──────────── LEFT: Filter + list ──────────── */}
-      <aside className="col-span-12 flex h-full min-h-0 flex-col border-r border-border md:col-span-4 lg:col-span-3">
+      <aside className={`${selectedId ? "hidden md:flex" : "flex"} col-span-12 h-full min-h-0 flex-col border-r border-border md:col-span-4 lg:col-span-3`}>
         <div className="border-b border-border p-3">
           <div className="relative">
             <Search className="absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -406,7 +409,7 @@ export function LiveChatManager() {
       </aside>
 
       {/* ──────────── CENTER: Thread ──────────── */}
-      <section className="col-span-12 flex h-full min-h-0 flex-col md:col-span-5 lg:col-span-6">
+      <section className={`${selectedId ? "flex" : "hidden md:flex"} col-span-12 h-full min-h-0 flex-col md:col-span-5 lg:col-span-6`}>
         {!conv ? (
           <div className="flex flex-1 items-center justify-center text-muted-foreground">
             Select a conversation
@@ -415,7 +418,19 @@ export function LiveChatManager() {
           <>
             {/* Header */}
             <div className="flex items-center justify-between border-b border-border px-4 py-3">
-              <div className="min-w-0">
+              <div className="flex min-w-0 items-center gap-2">
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="h-8 w-8 md:hidden"
+                  onClick={() => setSelectedId(null)}
+                  aria-label="Back to conversations"
+                  title="Back to conversations"
+                >
+                  ←
+                </Button>
+                <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <p className="truncate text-sm font-semibold text-foreground">
                     {conv.display_name ?? "User"}
@@ -437,6 +452,7 @@ export function LiveChatManager() {
                 <p className="truncate text-[11px] text-muted-foreground">
                   {conv.display_email ?? "—"}
                 </p>
+                </div>
               </div>
               <div className="flex items-center gap-1">
                 <span
@@ -444,6 +460,31 @@ export function LiveChatManager() {
                 >
                   {conv.status}
                 </span>
+                {canDeleteConversation && (
+                  <Button
+                    size="icon"
+                    variant="destructive"
+                    className="h-8 w-8"
+                    disabled={deleteConvMut.isPending}
+                    onClick={() => {
+                      if (
+                        confirm(
+                          "Permanently delete this conversation, all its messages, notes and attachments?",
+                        )
+                      ) {
+                        deleteConvMut.mutate(conv.id);
+                      }
+                    }}
+                    aria-label="Delete conversation"
+                    title="Delete conversation"
+                  >
+                    {deleteConvMut.isPending ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-4 w-4" />
+                    )}
+                  </Button>
+                )}
               </div>
             </div>
 
@@ -527,7 +568,7 @@ export function LiveChatManager() {
                           {fmtTime(m.created_at)}
                           {isStaff && m.read_at ? " · Seen" : ""}
                         </p>
-                        {perms.canDelete && (
+                        {canDeleteMessage && (
                           <button
                             onClick={() => {
                               if (confirm("Permanently delete this message?")) {
@@ -552,31 +593,41 @@ export function LiveChatManager() {
             {/* Composer */}
             <div className="sticky bottom-0 shrink-0 border-t border-border bg-card px-3 py-3">
               {tab === "reply" ? (
-                <div className="flex items-end gap-2">
-                  <Textarea
-                    value={reply}
-                    onChange={(e) => setReply(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                        e.preventDefault();
-                        if (reply.trim()) replyMut.mutate(reply.trim());
-                      }
-                    }}
-                    placeholder="Type your reply… (Cmd/Ctrl+Enter to send)"
-                    rows={2}
-                    className="flex-1 resize-none"
-                  />
-                  <Button
-                    onClick={() => reply.trim() && replyMut.mutate(reply.trim())}
-                    disabled={!reply.trim() || replyMut.isPending || !perms.canReply}
-                    className="h-10"
-                  >
-                    {replyMut.isPending ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Send className="h-4 w-4" />
-                    )}
-                  </Button>
+                <div className="space-y-2">
+                  {perms.failed && (
+                    <p className="text-xs text-destructive">{perms.error}</p>
+                  )}
+                  {!perms.failed && !perms.loading && !perms.canReply && (
+                    <p className="text-xs text-muted-foreground">Reply permission is required.</p>
+                  )}
+                  <div className="flex items-end gap-2">
+                    <Textarea
+                      value={reply}
+                      onChange={(e) => setReply(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                          e.preventDefault();
+                          if (reply.trim() && perms.canReply) replyMut.mutate(reply.trim());
+                        }
+                      }}
+                      placeholder="Type your reply… (Cmd/Ctrl+Enter to send)"
+                      rows={2}
+                      className="flex-1 resize-none"
+                      disabled={perms.loading || replyMut.isPending}
+                    />
+                    <Button
+                      onClick={() => reply.trim() && replyMut.mutate(reply.trim())}
+                      disabled={!selectedId || !reply.trim() || replyMut.isPending || perms.loading || !perms.canReply}
+                      className="h-10"
+                      title={!perms.canReply ? "Reply permission is required" : "Send reply"}
+                    >
+                      {replyMut.isPending || perms.loading ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Send className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </div>
                 </div>
               ) : (
                 <div className="space-y-2">
@@ -853,7 +904,7 @@ export function LiveChatManager() {
             )}
 
             {/* Danger zone */}
-            {perms.canDelete && (
+            {canDeleteConversation && (
               <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-2">
                 <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-destructive">
                   Danger zone
@@ -886,7 +937,7 @@ export function LiveChatManager() {
             <div className="mt-auto rounded-lg border border-border bg-muted/30 p-2 text-[11px] text-muted-foreground">
               <Shield className="mr-1 inline h-3 w-3" />
               RLS-isolated per user. Auto-deleted after 30 days of inactivity.
-              {!perms.canDelete && " Only super admins can delete."}
+              {!canDeleteConversation && " Only admins can delete."}
             </div>
           </>
         )}

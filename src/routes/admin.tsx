@@ -145,7 +145,7 @@ function AdminGate({ children }: { children: React.ReactNode }) {
           }
           return;
         }
-        if (!result?.isAdmin) {
+        if (!result?.isAdmin && !result?.isModerator) {
           console.warn("[admin-route] verifyAdmin returned non-admin", {
             userId: userData.user.id,
             sources: result?.sources,

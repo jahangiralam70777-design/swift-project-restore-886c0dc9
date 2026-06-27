@@ -1,7 +1,8 @@
-// Thin adapter over the unified RBAC resolver (useMyAccess). Kept for
-// backward compatibility with chat/broadcast managers — DO NOT add new
-// role logic here. New gates should call useCan()/useCanPage() directly.
-import { useMyAccess } from "@/hooks/use-my-access";
+// Thin adapter over the live-chat server permission resolver. Chat controls
+// must mirror the server functions' role rules, not the generic RBAC matrix.
+import { useQuery } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
+import { getMyChatPermissions } from "@/lib/live-chat.functions";
 import { useAppStore } from "@/stores/app-store";
 
 export type ChatPermissions = {
@@ -37,39 +38,41 @@ const EMPTY: ChatPermissions = {
 };
 
 export function useChatPermissions(): ChatPermissions {
-  const a = useMyAccess();
+  const getPerms = useServerFn(getMyChatPermissions);
+  const q = useQuery({
+    queryKey: ["chat", "permissions", "me"],
+    queryFn: () => getPerms(),
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+    retry: false,
+  });
   const storeUser = useAppStore((s) => s.user);
-  const userId = a.userId || storeUser?.id || null;
-  if (a.loading) {
+  const data = q.data;
+  const userId = data?.userId || storeUser?.id || null;
+  if (q.isLoading) {
     return { ...EMPTY, isAuthenticated: !!userId, userId, loading: true };
   }
-  if (a.failed) {
+  if (q.isError) {
     return {
       ...EMPTY,
       isAuthenticated: !!userId,
       userId,
       failed: true,
-      error: "RBAC access lookup failed or timed out",
+      error: q.error instanceof Error ? q.error.message : "Chat permission lookup failed",
     };
   }
-  if (!a.userId) return { ...EMPTY, loading: false };
-  const isModerator = a.roles.includes("moderator");
-  const isStaff = a.isAdmin || a.isSuperAdmin || isModerator;
-  // Capability mapping driven by the backend permission set so super_admin
-  // can grant chat capabilities to any role via the matrix.
-  const can = (p: string) =>
-    a.isSuperAdmin || a.isAdmin || a.permissions.has(p);
+  if (!data?.userId) return { ...EMPTY, loading: false };
   return {
     isAuthenticated: true,
-    isSuperAdmin: a.isSuperAdmin,
-    isAdmin: a.isAdmin,
-    isModerator,
-    isStaff,
-    canReply: isStaff || can("moderate_content"),
-    canAssign: a.isSuperAdmin || can("manage_users"),
-    canDelete: a.isSuperAdmin || can("manage_system"),
-    canManageSettings: a.isAdmin || can("manage_system"),
-    userId: a.userId,
+    isSuperAdmin: data.isSuperAdmin,
+    isAdmin: data.isAdmin,
+    isModerator: data.isModerator,
+    isStaff: data.isStaff,
+    canReply: data.canReply,
+    canAssign: data.canAssign,
+    canDelete: data.canDelete,
+    canManageSettings: data.canManageSettings,
+    userId: data.userId,
     loading: false,
     failed: false,
     error: null,

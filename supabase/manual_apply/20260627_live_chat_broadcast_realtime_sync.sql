@@ -12,6 +12,18 @@ grant select, insert, update on public.live_chat_messages to authenticated;
 grant all on public.live_chat_conversations to service_role;
 grant all on public.live_chat_messages to service_role;
 
+-- Columns used by the imported chat UI and broadcast fan-out. These are safe
+-- to re-run and cover projects where only the v1 live-chat migration applied.
+alter table public.live_chat_conversations
+  add column if not exists title text,
+  add column if not exists expires_at timestamptz not null default (now() + interval '30 days'),
+  add column if not exists user_hidden_at timestamptz;
+
+alter table public.live_chat_messages
+  add column if not exists expires_at timestamptz not null default (now() + interval '30 days'),
+  add column if not exists deleted_at timestamptz,
+  add column if not exists deleted_by uuid references auth.users(id) on delete set null;
+
 drop policy if exists lcc_select on public.live_chat_conversations;
 create policy lcc_select on public.live_chat_conversations for select
   to authenticated

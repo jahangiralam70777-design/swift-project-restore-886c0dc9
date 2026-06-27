@@ -178,18 +178,23 @@ export function BroadcastManager() {
       return withTimeout(createFn({
         data: {
           subject, body, priority, delivery_methods: methods as ("inbox" | "chat" | "popup")[],
-          target_kind: target, target_filter: filter,
+          target_kind: target, target_filter: filter, skip_duplicates: skipDuplicates,
         },
       }), BROADCAST_QUERY_TIMEOUT_MS, "Broadcast send timed out");
     },
     onSuccess: (r) => {
-      toast.success(`Broadcast sent to ${r.recipient_count} user(s)`);
+      const skippedTotal = (r.skipped?.inbox ?? 0) + (r.skipped?.chat ?? 0) + (r.skipped?.popup ?? 0);
+      const suffix = skipDuplicates && skippedTotal > 0
+        ? ` (skipped ${skippedTotal} previously-sent delivery${skippedTotal === 1 ? "" : "s"})`
+        : "";
+      toast.success(`Broadcast sent to ${r.recipient_count} user(s)${suffix}`);
       setSubject(""); setBody("");
       qc.invalidateQueries({ queryKey: ["broadcasts"] });
       setTab("history");
     },
     onError: (e) => toast.error((e as Error).message),
   });
+
 
   const saveTplMut = useMutation({
     mutationFn: async () => withTimeout(tplCreateFn({

@@ -304,7 +304,7 @@ export function LiveChatManager() {
   return (
     <div className="grid h-[calc(100dvh-10rem)] min-h-[480px] grid-cols-12 gap-3 overflow-hidden rounded-2xl border border-border bg-card text-card-foreground">
       {/* ──────────── LEFT: Filter + list ──────────── */}
-      <aside className="col-span-12 flex h-full min-h-0 flex-col border-r border-border md:col-span-4 lg:col-span-3">
+      <aside className={`${selectedId ? "hidden md:flex" : "flex"} col-span-12 h-full min-h-0 flex-col border-r border-border md:col-span-4 lg:col-span-3`}>
         <div className="border-b border-border p-3">
           <div className="relative">
             <Search className="absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -409,7 +409,7 @@ export function LiveChatManager() {
       </aside>
 
       {/* ──────────── CENTER: Thread ──────────── */}
-      <section className="col-span-12 flex h-full min-h-0 flex-col md:col-span-5 lg:col-span-6">
+      <section className={`${selectedId ? "flex" : "hidden md:flex"} col-span-12 h-full min-h-0 flex-col md:col-span-5 lg:col-span-6`}>
         {!conv ? (
           <div className="flex flex-1 items-center justify-center text-muted-foreground">
             Select a conversation
@@ -418,7 +418,19 @@ export function LiveChatManager() {
           <>
             {/* Header */}
             <div className="flex items-center justify-between border-b border-border px-4 py-3">
-              <div className="min-w-0">
+              <div className="flex min-w-0 items-center gap-2">
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="h-8 w-8 md:hidden"
+                  onClick={() => setSelectedId(null)}
+                  aria-label="Back to conversations"
+                  title="Back to conversations"
+                >
+                  ←
+                </Button>
+                <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <p className="truncate text-sm font-semibold text-foreground">
                     {conv.display_name ?? "User"}
@@ -440,6 +452,7 @@ export function LiveChatManager() {
                 <p className="truncate text-[11px] text-muted-foreground">
                   {conv.display_email ?? "—"}
                 </p>
+                </div>
               </div>
               <div className="flex items-center gap-1">
                 <span

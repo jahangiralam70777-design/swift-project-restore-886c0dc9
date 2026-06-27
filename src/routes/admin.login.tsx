@@ -49,7 +49,7 @@ function AdminLogin() {
         serverRole: verified.role,
         sources: verified.sources,
       });
-      if (!verified.isAdmin) {
+      if (!verified.isAdmin && !verified.isModerator) {
         // Strict separation: only admin-role accounts may use /admin/login.
         // Sign non-admins out and STAY on /admin/login (no cross-redirect).
         await signOut().catch(() => undefined);

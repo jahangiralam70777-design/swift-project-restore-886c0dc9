@@ -444,43 +444,7 @@ export const createBroadcast = createServerFn({ method: "POST" })
     };
   });
 
-// Resend a previously-sent broadcast. Reuses the original broadcast's
-// `campaign_id`, so identity-based duplicate detection (Skip Previously Sent
-// Users) recognises this as a re-send of the SAME broadcast — not a new one
-// that just happens to share subject/body.
-const resendSchema = z.object({
-  id: z.string().uuid(),
-  skip_duplicates: z.boolean().default(true),
-});
 
-export const resendBroadcast = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .inputValidator((i: unknown) => resendSchema.parse(i))
-  .handler(async ({ data, context }) => {
-    await ensureAdmin(context.supabase, context.userId);
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const { data: orig, error } = await asAny(supabaseAdmin)
-      .from("broadcasts")
-      .select("id, campaign_id, subject, body, priority, delivery_methods, target_kind, target_filter")
-      .eq("id", data.id)
-      .maybeSingle();
-    if (error) throw new Error(error.message);
-    if (!orig) throw new Error("Broadcast not found");
-    // Defer to createBroadcast so all delivery paths (Inbox / Chat / Popup)
-    // and recipient tracking stay in one place.
-    return createBroadcast({
-      data: {
-        subject: orig.subject,
-        body: orig.body,
-        priority: orig.priority,
-        delivery_methods: orig.delivery_methods,
-        target_kind: orig.target_kind,
-        target_filter: orig.target_filter ?? {},
-        skip_duplicates: data.skip_duplicates,
-        campaign_id: orig.campaign_id ?? orig.id,
-      },
-    });
-  });
 
 
 

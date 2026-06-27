@@ -343,7 +343,7 @@ export function LiveChatWidget() {
         .catch(() => undefined)
         .finally(refreshConversations);
     }
-  }, [open, view, activeConvId, markRead, qc]);
+  }, [open, view, activeConvId, markRead, refreshConversations]);
 
   // Scroll to bottom
   useEffect(() => {

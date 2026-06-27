@@ -1,14 +1,7 @@
-import { createHash } from "crypto";
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { noInput } from "@/lib/validate";
-
-function broadcastContentHash(subject: string, body: string): string {
-  return createHash("sha256")
-    .update(`${subject.trim()}\n\n${body.trim()}`)
-    .digest("hex");
-}
 
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -30,6 +23,10 @@ export type TargetFilter = { [k: string]: JsonValue };
 
 export type Broadcast = {
   id: string;
+  // Persistent broadcast identity. Stable across re-sends of the SAME
+  // broadcast; resends inherit the original campaign_id, brand-new broadcasts
+  // get a fresh one. Drives identity-based duplicate detection.
+  campaign_id: string;
   subject: string;
   body: string;
   priority: BroadcastPriority;
@@ -215,13 +212,22 @@ const createSchema = z.object({
   target_kind: z.enum(["all_students", "active_users", "new_users", "class", "batch", "course", "users"]),
   target_filter: z.record(z.string(), z.any()).default({}) as unknown as z.ZodType<TargetFilter>,
   skip_duplicates: z.boolean().default(false),
+  // Persistent broadcast identity. Stable across re-sends of the SAME
+  // broadcast. Defaults to a fresh UUID at the DB layer (new campaign) when
+  // omitted. Re-send flows pass the original broadcast's campaign_id.
+  campaign_id: z.string().uuid().optional(),
 });
 
 type DeliveryMethod = "inbox" | "chat" | "popup";
 
+// Skip-duplicates: identity-based, not content-based.
+// Two broadcasts with the SAME subject/body but DIFFERENT campaign_id are
+// independent campaigns and must NOT be treated as duplicates of each other.
+// Only prior sends with the same campaign_id count as duplicates.
 async function computeSkipExclusions(
   supabaseAdmin: any,
-  contentHash: string,
+  campaignId: string,
+  currentBroadcastId: string | null,
   methods: DeliveryMethod[],
   candidateIds: string[],
 ): Promise<Record<DeliveryMethod, Set<string>>> {
@@ -230,10 +236,12 @@ async function computeSkipExclusions(
   };
   if (candidateIds.length === 0) return empty;
 
-  const { data: priors, error: pErr } = await asAny(supabaseAdmin)
+  let priorQ = asAny(supabaseAdmin)
     .from("broadcasts")
     .select("id, delivery_methods")
-    .eq("content_hash", contentHash);
+    .eq("campaign_id", campaignId);
+  if (currentBroadcastId) priorQ = priorQ.neq("id", currentBroadcastId);
+  const { data: priors, error: pErr } = await priorQ;
   if (pErr) throw new Error(`Skip-duplicates prior lookup failed: ${pErr.message}`);
   const priorList = (priors ?? []) as Array<{ id: string; delivery_methods: string[] }>;
   if (priorList.length === 0) return empty;
@@ -274,10 +282,12 @@ export const createBroadcast = createServerFn({ method: "POST" })
       supabaseAdmin,
       await resolveRecipients(supabaseAdmin, data.target_kind, data.target_filter),
     );
-    const contentHash = broadcastContentHash(data.subject, data.body);
+    // Identity-based duplicate detection. Resends pass the original
+    // broadcast's campaign_id; brand-new broadcasts mint a fresh one.
+    const campaignId = data.campaign_id ?? crypto.randomUUID();
 
     const exclusions = data.skip_duplicates
-      ? await computeSkipExclusions(supabaseAdmin, contentHash, methods, baseIds)
+      ? await computeSkipExclusions(supabaseAdmin, campaignId, null, methods, baseIds)
       : { inbox: new Set<string>(), chat: new Set<string>(), popup: new Set<string>() };
 
     const perMethodIds: Record<DeliveryMethod, string[]> = {
@@ -311,7 +321,7 @@ export const createBroadcast = createServerFn({ method: "POST" })
         recipient_count: effectiveIds.length,
         created_by: context.userId,
         sent_at: now,
-        content_hash: contentHash,
+        campaign_id: campaignId,
         skip_duplicates: data.skip_duplicates,
       })
       .select("*")
@@ -437,6 +447,10 @@ export const createBroadcast = createServerFn({ method: "POST" })
       },
     };
   });
+
+
+
+
 
 
 // ---------- LIST / HISTORY ----------

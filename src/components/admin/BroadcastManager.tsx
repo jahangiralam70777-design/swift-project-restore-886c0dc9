@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 import {
-  AlertTriangle, Loader2, Send, Megaphone, Pin, PinOff, EyeOff, Eye, Trash2, FileText, History,
+  AlertTriangle, Loader2, Send, Megaphone, Pin, PinOff, EyeOff, Eye, Trash2, FileText, History, RotateCcw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -355,8 +355,10 @@ export function BroadcastManager() {
             <label htmlFor="broadcast-skip-duplicates" className="cursor-pointer text-xs">
               <span className="block font-semibold text-foreground">Skip Previously Sent Users</span>
               <span className="mt-0.5 block text-muted-foreground">
-                When enabled, users who already received this exact broadcast (same subject and message)
-                through any of the selected delivery methods will be skipped for that method.
+                When enabled, users who already received THIS broadcast (matched by its
+                persistent campaign identity, not by subject/body) through any of the
+                selected delivery methods will be skipped for that method. New broadcasts
+                that happen to share the same subject/body are NOT treated as duplicates.
               </span>
             </label>
           </div>
@@ -412,6 +414,22 @@ export function BroadcastManager() {
                     </p>
                   </div>
                   <div className="flex shrink-0 gap-1">
+                    <Button size="sm" variant="ghost" title="Resend (skips users who already received this broadcast)" onClick={async () => {
+                      if (!confirm("Re-send this broadcast?\n\nUsers who already received it (per delivery method) will be skipped automatically.")) return;
+                      try {
+                        const r = await createFn({ data: {
+                          subject: b.subject, body: b.body, priority: b.priority,
+                          delivery_methods: (b.delivery_methods as ("inbox" | "chat" | "popup")[]),
+                          target_kind: b.target_kind, target_filter: b.target_filter ?? {},
+                          skip_duplicates: true, campaign_id: b.campaign_id ?? b.id,
+                        } });
+                        const skipped = (r.skipped?.inbox ?? 0) + (r.skipped?.chat ?? 0) + (r.skipped?.popup ?? 0);
+                        toast.success(`Re-sent to ${r.recipient_count} user(s)${skipped ? ` (skipped ${skipped} already-delivered)` : ""}`);
+                        qc.invalidateQueries({ queryKey: ["broadcasts"] });
+                      } catch (e) { toast.error((e as Error).message); }
+                    }}>
+                      <RotateCcw className="h-3.5 w-3.5" />
+                    </Button>
                     <Button size="sm" variant="ghost" onClick={() => pinFn({ data: { id: b.id, pinned: !b.pinned } }).then(() => qc.invalidateQueries({ queryKey: ["broadcasts"] }))}>
                       {b.pinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
                     </Button>

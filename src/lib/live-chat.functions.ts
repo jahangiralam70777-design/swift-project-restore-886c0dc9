@@ -94,38 +94,50 @@ export type StaffMember = {
 // ============================================================
 // Helpers
 // ============================================================
-async function ensureStaff(supabase: any, userId: string, permission?: string) {
-  const { data, error } = await supabase.rpc("is_chat_staff", { _user_id: userId });
-  if (error) throw new Error(error.message);
-  if (!data) throw new Error("Forbidden: not authorized for support");
-  if (permission) {
-    const { data: ok, error: e2 } = await supabase.rpc("has_chat_permission", {
-      _user_id: userId,
-      _permission: permission,
-    });
-    if (e2) throw new Error(e2.message);
-    if (!ok) throw new Error(`Forbidden: missing '${permission}' permission`);
+// Role lookup goes directly through supabaseAdmin (service role, bypasses RLS)
+// so chat permission checks never fail due to RPC/enum-cast quirks or missing
+// EXECUTE grants. This is the single source of truth for staff capability
+// in the live-chat server functions.
+type StaffRoles = { roles: Set<string>; isStaff: boolean; isAdmin: boolean; isSuperAdmin: boolean; isModerator: boolean };
+
+async function loadRoles(userId: string): Promise<StaffRoles> {
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  const { data, error } = await asAny(supabaseAdmin)
+    .from("user_roles")
+    .select("role")
+    .eq("user_id", userId);
+  if (error) {
+    console.error("[live-chat][loadRoles] failed", { userId, message: error.message });
+    throw new Error("Permission lookup failed");
   }
+  const roles = new Set<string>(((data ?? []) as Array<{ role: string }>).map((r) => String(r.role)));
+  const isAdmin = roles.has("admin");
+  const isSuperAdmin = roles.has("super_admin");
+  const isModerator = roles.has("moderator");
+  return { roles, isAdmin, isSuperAdmin, isModerator, isStaff: isAdmin || isSuperAdmin || isModerator };
 }
 
-async function ensureSuperAdmin(supabase: any, userId: string) {
-  const { data, error } = await supabase.rpc("has_role", {
-    _user_id: userId,
-    _role: "super_admin",
-  });
-  if (error) throw new Error(error.message);
-  if (!data) throw new Error("Forbidden: super admin role required");
+// `permission` is informational — capability is derived from the role.
+// Moderator => view/reply/close. Admin/Super Admin => everything.
+async function ensureStaff(_supabase: any, userId: string, permission?: string) {
+  const r = await loadRoles(userId);
+  if (!r.isStaff) throw new Error("Forbidden: not authorized for support");
+  if (permission === "manage_settings" || permission === "delete_message" || permission === "assign") {
+    if (!(r.isAdmin || r.isSuperAdmin)) {
+      throw new Error(`Forbidden: missing '${permission}' permission`);
+    }
+  }
+  // view / reply / close => any staff role (moderator included)
 }
 
-async function ensureChatAdmin(supabase: any, userId: string) {
-  const [{ data: isAdmin, error: adminError }, { data: isSuper, error: superError }] =
-    await Promise.all([
-      supabase.rpc("has_role", { _user_id: userId, _role: "admin" }),
-      supabase.rpc("has_role", { _user_id: userId, _role: "super_admin" }),
-    ]);
-  if (adminError) throw new Error(adminError.message);
-  if (superError) throw new Error(superError.message);
-  if (!isAdmin && !isSuper) throw new Error("Forbidden: admin role required");
+async function ensureSuperAdmin(_supabase: any, userId: string) {
+  const r = await loadRoles(userId);
+  if (!r.isSuperAdmin) throw new Error("Forbidden: super admin role required");
+}
+
+async function ensureChatAdmin(_supabase: any, userId: string) {
+  const r = await loadRoles(userId);
+  if (!r.isAdmin && !r.isSuperAdmin) throw new Error("Forbidden: admin role required");
 }
 
 const sanitizeBody = (s: string) =>

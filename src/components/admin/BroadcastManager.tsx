@@ -133,6 +133,8 @@ export function BroadcastManager() {
   const [newPreset, setNewPreset] = useState("7d");
   const [userIds, setUserIds] = useState("");
   const [tplName, setTplName] = useState("");
+  const [skipDuplicates, setSkipDuplicates] = useState(false);
+
 
   const adminAccessQ = useQuery({
     queryKey: ["broadcasts", "admin-access"],

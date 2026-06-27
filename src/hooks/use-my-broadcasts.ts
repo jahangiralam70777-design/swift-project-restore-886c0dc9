@@ -53,7 +53,18 @@ export function useMyBroadcasts(enabledOpt = true) {
     onError: (_e, _v, ctx) => {
       if (ctx?.prev) qc.setQueryData(MY_BROADCASTS_KEY, ctx.prev);
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: MY_BROADCASTS_KEY }),
+    onSuccess: (result) => {
+      const notificationIds = Array.isArray(result?.notification_ids) ? result.notification_ids : [];
+      if (notificationIds.length > 0) {
+        qc.setQueryData<Array<{ id: string; read: boolean }>>(["my-notifications"], (old) =>
+          (old ?? []).map((n) => (notificationIds.includes(n.id) ? { ...n, read: true } : n)),
+        );
+      }
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: MY_BROADCASTS_KEY });
+      qc.invalidateQueries({ queryKey: ["my-notifications"] });
+    },
   });
 
   const hide = useMutation({

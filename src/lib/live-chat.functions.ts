@@ -117,8 +117,30 @@ async function ensureSuperAdmin(supabase: any, userId: string) {
   if (!data) throw new Error("Forbidden: super admin role required");
 }
 
+async function ensureChatAdmin(supabase: any, userId: string) {
+  const [{ data: isAdmin, error: adminError }, { data: isSuper, error: superError }] =
+    await Promise.all([
+      supabase.rpc("has_role", { _user_id: userId, _role: "admin" }),
+      supabase.rpc("has_role", { _user_id: userId, _role: "super_admin" }),
+    ]);
+  if (adminError) throw new Error(adminError.message);
+  if (superError) throw new Error(superError.message);
+  if (!isAdmin && !isSuper) throw new Error("Forbidden: admin role required");
+}
+
 const sanitizeBody = (s: string) =>
   s.replace(/[\u0000-\u001F\u007F]/g, "").trim().slice(0, 4000);
+
+async function getOwnedConversation(supabaseAdmin: any, conversationId: string, userId: string) {
+  const { data: conv, error } = await asAny(supabaseAdmin)
+    .from("live_chat_conversations")
+    .select("id,user_id,is_blocked")
+    .eq("id", conversationId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!conv || conv.user_id !== userId) throw new Error("Not your conversation");
+  return conv as { id: string; user_id: string; is_blocked: boolean };
+}
 
 /** Look up auth emails for a set of user ids using supabaseAdmin. */
 async function lookupAuthEmails(
@@ -245,13 +267,23 @@ export const listMyConversations = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .inputValidator(noInput)
   .handler(async ({ context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { data, error } = await asAny(context.supabase)
       .from("live_chat_conversations")
       .select("*")
       .eq("user_id", context.userId)
       .is("user_hidden_at", null)
       .order("last_message_at", { ascending: false });
-    if (error) throw new Error(error.message);
+    if (error) {
+      const fallback = await asAny(supabaseAdmin)
+        .from("live_chat_conversations")
+        .select("*")
+        .eq("user_id", context.userId)
+        .is("user_hidden_at", null)
+        .order("last_message_at", { ascending: false });
+      if (fallback.error) throw new Error(fallback.error.message);
+      return (fallback.data ?? []) as ChatConversation[];
+    }
     return (data ?? []) as ChatConversation[];
   });
 
@@ -261,7 +293,9 @@ export const userHideConversation = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((input: unknown) => conversationIdSchema.parse(input))
   .handler(async ({ data, context }) => {
-    const { error } = await asAny(context.supabase)
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    await getOwnedConversation(supabaseAdmin, data.conversation_id, context.userId);
+    const { error } = await asAny(supabaseAdmin)
       .from("live_chat_conversations")
       .update({ user_hidden_at: new Date().toISOString() })
       .eq("id", data.conversation_id)
@@ -288,7 +322,8 @@ export const startNewConversation = createServerFn({ method: "POST" })
       ? firstMessage.split(/\s+/).filter(Boolean).slice(0, 8).join(" ")
       : null;
     const inferredTitle = subject || fallbackFromMessage;
-    const { data: created, error } = await asAny(context.supabase)
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: created, error } = await asAny(supabaseAdmin)
       .from("live_chat_conversations")
       .insert({
         user_id: context.userId,
@@ -301,7 +336,7 @@ export const startNewConversation = createServerFn({ method: "POST" })
     if (error) throw new Error(error.message);
 
     if (firstMessage) {
-      await asAny(context.supabase)
+      const { error: messageError } = await asAny(supabaseAdmin)
         .from("live_chat_messages")
         .insert({
           conversation_id: created.id,
@@ -310,6 +345,13 @@ export const startNewConversation = createServerFn({ method: "POST" })
           body: firstMessage,
           delivered_at: new Date().toISOString(),
         });
+      if (messageError) {
+        await asAny(supabaseAdmin)
+          .from("live_chat_conversations")
+          .delete()
+          .eq("id", created.id);
+        throw new Error(messageError.message);
+      }
     }
     return created as ChatConversation;
   });
@@ -320,7 +362,9 @@ export const listConversationMessages = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((input: unknown) => conversationIdSchema.parse(input))
   .handler(async ({ data, context }) => {
-    const { data: rows, error } = await asAny(context.supabase)
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    await getOwnedConversation(supabaseAdmin, data.conversation_id, context.userId);
+    const { data: rows, error } = await asAny(supabaseAdmin)
       .from("live_chat_messages")
       .select("*")
       .eq("conversation_id", data.conversation_id)
@@ -343,16 +387,11 @@ export const userSendMessage = createServerFn({ method: "POST" })
     const body = sanitizeBody(data.body);
     if (!body) throw new Error("Message is empty");
 
-    const { data: conv, error: cErr } = await asAny(context.supabase)
-      .from("live_chat_conversations")
-      .select("id, user_id, is_blocked")
-      .eq("id", data.conversation_id)
-      .single();
-    if (cErr) throw new Error(cErr.message);
-    if (!conv || conv.user_id !== context.userId) throw new Error("Not your conversation");
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const conv = await getOwnedConversation(supabaseAdmin, data.conversation_id, context.userId);
     if (conv.is_blocked) throw new Error("This conversation is blocked");
 
-    const { data: msg, error } = await asAny(context.supabase)
+    const { data: msg, error } = await asAny(supabaseAdmin)
       .from("live_chat_messages")
       .insert({
         conversation_id: data.conversation_id,
@@ -366,7 +405,6 @@ export const userSendMessage = createServerFn({ method: "POST" })
     if (error) throw new Error(error.message);
 
     try {
-      const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
       const { data: admins } = await asAny(supabaseAdmin)
         .from("user_roles")
         .select("user_id")
@@ -402,18 +440,21 @@ export const userMarkRead = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => conversationIdSchema.parse(input))
   .handler(async ({ data, context }) => {
     const now = new Date().toISOString();
-    const { error } = await asAny(context.supabase)
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    await getOwnedConversation(supabaseAdmin, data.conversation_id, context.userId);
+    const { error } = await asAny(supabaseAdmin)
       .from("live_chat_conversations")
       .update({ unread_for_user: 0, user_last_seen_at: now })
       .eq("id", data.conversation_id)
       .eq("user_id", context.userId);
     if (error) throw new Error(error.message);
-    await asAny(context.supabase)
+    const { error: messageError } = await asAny(supabaseAdmin)
       .from("live_chat_messages")
       .update({ read_at: now })
       .eq("conversation_id", data.conversation_id)
       .eq("sender_type", "staff")
       .is("read_at", null);
+    if (messageError) throw new Error(messageError.message);
     return { ok: true };
   });
 
@@ -818,7 +859,7 @@ export const adminDeleteConversation = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((input: unknown) => conversationIdSchema.parse(input))
   .handler(async ({ data, context }) => {
-    await ensureSuperAdmin(context.supabase, context.userId);
+    await ensureChatAdmin(context.supabase, context.userId);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
     // Collect attachment paths from all messages

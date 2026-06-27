@@ -19,6 +19,7 @@ export type MyNotification = {
   sent_at: string | null;
   created_at: string;
   read: boolean;
+  source_broadcast_id?: string | null;
 };
 
 export const MY_NOTIF_KEY = ["my-notifications"] as const;
@@ -79,7 +80,26 @@ export function useMyNotifications(enabledOpt = true) {
     onError: (_e, _id, ctx) => {
       if (ctx?.prev) qc.setQueryData(MY_NOTIF_KEY, ctx.prev);
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: MY_NOTIF_KEY }),
+    onSuccess: (result) => {
+      const recipientIds = Array.isArray(result?.broadcast_recipient_ids)
+        ? result.broadcast_recipient_ids
+        : [];
+      if (recipientIds.length > 0) {
+        qc.setQueryData<Array<{ recipient_id: string; read_at: string | null }>>(
+          ["my-broadcasts"],
+          (old) =>
+            (old ?? []).map((b) =>
+              recipientIds.includes(b.recipient_id)
+                ? { ...b, read_at: b.read_at ?? new Date().toISOString() }
+                : b,
+            ),
+        );
+      }
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: MY_NOTIF_KEY });
+      qc.invalidateQueries({ queryKey: ["my-broadcasts"] });
+    },
   });
 
   const markAll = useMutation({
@@ -95,7 +115,16 @@ export function useMyNotifications(enabledOpt = true) {
     onError: (_e, _v, ctx) => {
       if (ctx?.prev) qc.setQueryData(MY_NOTIF_KEY, ctx.prev);
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: MY_NOTIF_KEY }),
+    onSuccess: () => {
+      qc.setQueryData<Array<{ recipient_id: string; read_at: string | null }>>(
+        ["my-broadcasts"],
+        (old) => (old ?? []).map((b) => ({ ...b, read_at: b.read_at ?? new Date().toISOString() })),
+      );
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: MY_NOTIF_KEY });
+      qc.invalidateQueries({ queryKey: ["my-broadcasts"] });
+    },
   });
 
   const items = q.data ?? [];

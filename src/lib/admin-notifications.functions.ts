@@ -229,7 +229,7 @@ export const listMyNotifications = createServerFn({ method: "GET" })
     const sb = context.supabase;
     const { data, error } = await sb
       .from("notifications")
-      .select("id,title,body,link,type,priority,status,sent_at,created_at")
+      .select("id,title,body,link,type,priority,status,sent_at,created_at,source_broadcast_id")
       .eq("user_id", context.userId)
       .in("status", ["unread", "read", "sent"])
       .order("sent_at", { ascending: false })
@@ -253,11 +253,22 @@ export const markNotificationRead = createServerFn({ method: "POST" })
   .inputValidator((i: { id: string }) => z.object({ id: z.string().uuid() }).parse(i))
   .handler(async ({ data, context }) => {
     const now = new Date().toISOString();
-    await context.supabase
+    const { data: notification, error: lookupError } = await context.supabase
+      .from("notifications")
+      .select("id,source_broadcast_id")
+      .eq("id", data.id)
+      .eq("user_id", context.userId)
+      .maybeSingle();
+    if (lookupError) throw lookupError;
+    if (!notification) throw new Error("Notification not found");
+
+    const { error: notificationError } = await context.supabase
       .from("notifications")
       .update({ status: "read", read_at: now })
       .eq("id", data.id)
       .eq("user_id", context.userId);
+    if (notificationError) throw notificationError;
+
     const { error } = await context.supabase
       .from("notification_reads")
       .upsert(
@@ -265,7 +276,20 @@ export const markNotificationRead = createServerFn({ method: "POST" })
         { onConflict: "notification_id,user_id" },
       );
     if (error) throw error;
-    return { ok: true };
+
+    let broadcastRecipientIds: string[] = [];
+    if (notification.source_broadcast_id) {
+      const { data: recipients, error: broadcastError } = await context.supabase
+        .from("broadcast_recipients")
+        .update({ read_at: now })
+        .eq("broadcast_id", notification.source_broadcast_id)
+        .eq("user_id", context.userId)
+        .select("id");
+      if (broadcastError) throw broadcastError;
+      broadcastRecipientIds = ((recipients ?? []) as Array<{ id: string }>).map((r) => r.id);
+    }
+
+    return { ok: true, broadcast_recipient_ids: broadcastRecipientIds };
   });
 
 export const markAllNotificationsRead = createServerFn({ method: "POST" })
@@ -273,9 +297,10 @@ export const markAllNotificationsRead = createServerFn({ method: "POST" })
   .inputValidator(noInput)
   .handler(async ({ context }) => {
     const sb = context.supabase;
+    const now = new Date().toISOString();
     const { data: notifs, error: ne } = await sb
       .from("notifications")
-      .select("id")
+      .select("id,source_broadcast_id")
       .eq("user_id", context.userId)
       .in("status", ["unread", "sent"])
       .limit(500);
@@ -284,12 +309,37 @@ export const markAllNotificationsRead = createServerFn({ method: "POST" })
     const rows = notifs.map((n: { id: string }) => ({
       notification_id: n.id,
       user_id: context.userId,
-      read_at: new Date().toISOString(),
+      read_at: now,
     }));
-    await sb.from("notifications").update({ status: "read", read_at: new Date().toISOString() }).eq("user_id", context.userId).in("id", notifs.map((n: { id: string }) => n.id));
+    const { error: updateError } = await sb
+      .from("notifications")
+      .update({ status: "read", read_at: now })
+      .eq("user_id", context.userId)
+      .in("id", notifs.map((n: { id: string }) => n.id));
+    if (updateError) throw updateError;
     const { error } = await sb
       .from("notification_reads")
       .upsert(rows, { onConflict: "notification_id,user_id" });
     if (error) throw error;
-    return { ok: true, count: rows.length };
+
+    const broadcastIds = Array.from(
+      new Set(
+        (notifs as Array<{ source_broadcast_id?: string | null }>)
+          .map((n) => n.source_broadcast_id)
+          .filter((id): id is string => !!id),
+      ),
+    );
+    let broadcastRecipientIds: string[] = [];
+    if (broadcastIds.length > 0) {
+      const { data: recipients, error: broadcastError } = await sb
+        .from("broadcast_recipients")
+        .update({ read_at: now })
+        .eq("user_id", context.userId)
+        .in("broadcast_id", broadcastIds)
+        .select("id");
+      if (broadcastError) throw broadcastError;
+      broadcastRecipientIds = ((recipients ?? []) as Array<{ id: string }>).map((r) => r.id);
+    }
+
+    return { ok: true, count: rows.length, broadcast_recipient_ids: broadcastRecipientIds };
   });

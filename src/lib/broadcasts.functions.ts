@@ -657,13 +657,41 @@ export const markBroadcastRead = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((i: unknown) => idSchema.parse(i))
   .handler(async ({ data, context }) => {
-    const { error } = await asAny(context.supabase)
+    const now = new Date().toISOString();
+    const { data: recipient, error } = await asAny(context.supabase)
       .from("broadcast_recipients")
-      .update({ read_at: new Date().toISOString() })
+      .update({ read_at: now })
       .eq("id", data.id)
-      .eq("user_id", context.userId);
+      .eq("user_id", context.userId)
+      .select("id,broadcast_id")
+      .maybeSingle();
     if (error) throw new Error(error.message);
-    return { ok: true };
+    if (!recipient) throw new Error("Broadcast recipient not found");
+
+    const { data: notifications, error: notificationError } = await asAny(context.supabase)
+      .from("notifications")
+      .update({ status: "read", read_at: now })
+      .eq("source_broadcast_id", recipient.broadcast_id)
+      .eq("user_id", context.userId)
+      .select("id");
+    if (notificationError) throw new Error(notificationError.message);
+
+    const notificationIds = ((notifications ?? []) as Array<{ id: string }>).map((n) => n.id);
+    if (notificationIds.length > 0) {
+      const { error: readError } = await asAny(context.supabase)
+        .from("notification_reads")
+        .upsert(
+          notificationIds.map((notificationId) => ({
+            notification_id: notificationId,
+            user_id: context.userId,
+            read_at: now,
+          })),
+          { onConflict: "notification_id,user_id" },
+        );
+      if (readError) throw new Error(readError.message);
+    }
+
+    return { ok: true, notification_ids: notificationIds };
   });
 
 // Student-side soft delete: hide a broadcast from the current user only.

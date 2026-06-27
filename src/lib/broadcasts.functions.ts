@@ -1,7 +1,15 @@
+import { createHash } from "crypto";
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { noInput } from "@/lib/validate";
+
+function broadcastContentHash(subject: string, body: string): string {
+  return createHash("sha256")
+    .update(`${subject.trim()}\n\n${body.trim()}`)
+    .digest("hex");
+}
+
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const asAny = (x: unknown) => x as any;
@@ -206,7 +214,54 @@ const createSchema = z.object({
   delivery_methods: z.array(z.enum(["inbox", "chat", "popup"])).min(1).default(["inbox"]),
   target_kind: z.enum(["all_students", "active_users", "new_users", "class", "batch", "course", "users"]),
   target_filter: z.record(z.string(), z.any()).default({}) as unknown as z.ZodType<TargetFilter>,
+  skip_duplicates: z.boolean().default(false),
 });
+
+type DeliveryMethod = "inbox" | "chat" | "popup";
+
+async function computeSkipExclusions(
+  supabaseAdmin: any,
+  contentHash: string,
+  methods: DeliveryMethod[],
+  candidateIds: string[],
+): Promise<Record<DeliveryMethod, Set<string>>> {
+  const empty: Record<DeliveryMethod, Set<string>> = {
+    inbox: new Set(), chat: new Set(), popup: new Set(),
+  };
+  if (candidateIds.length === 0) return empty;
+
+  const { data: priors, error: pErr } = await asAny(supabaseAdmin)
+    .from("broadcasts")
+    .select("id, delivery_methods")
+    .eq("content_hash", contentHash);
+  if (pErr) throw new Error(`Skip-duplicates prior lookup failed: ${pErr.message}`);
+  const priorList = (priors ?? []) as Array<{ id: string; delivery_methods: string[] }>;
+  if (priorList.length === 0) return empty;
+
+  for (const method of methods) {
+    const priorIdsForMethod = priorList
+      .filter((p) => Array.isArray(p.delivery_methods) && p.delivery_methods.includes(method))
+      .map((p) => p.id);
+    if (priorIdsForMethod.length === 0) continue;
+
+    for (const uidChunk of chunks(candidateIds, 500)) {
+      const { data, error } = await asAny(supabaseAdmin)
+        .from("broadcast_recipients")
+        .select("user_id, methods")
+        .in("broadcast_id", priorIdsForMethod)
+        .in("user_id", uidChunk);
+      if (error) throw new Error(`Skip-duplicates recipient lookup failed: ${error.message}`);
+      for (const row of (data ?? []) as Array<{ user_id: string; methods: string[] | null }>) {
+        // Back-compat: rows predating per-user `methods` column are treated as
+        // having received every method declared on their parent broadcast.
+        if (!row.methods || row.methods.length === 0 || row.methods.includes(method)) {
+          empty[method].add(row.user_id);
+        }
+      }
+    }
+  }
+  return empty;
+}
 
 export const createBroadcast = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -214,10 +269,34 @@ export const createBroadcast = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     await ensureAdmin(context.supabase, context.userId);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const ids = await filterStudentRecipients(
+    const methods = data.delivery_methods as DeliveryMethod[];
+    const baseIds = await filterStudentRecipients(
       supabaseAdmin,
       await resolveRecipients(supabaseAdmin, data.target_kind, data.target_filter),
     );
+    const contentHash = broadcastContentHash(data.subject, data.body);
+
+    const exclusions = data.skip_duplicates
+      ? await computeSkipExclusions(supabaseAdmin, contentHash, methods, baseIds)
+      : { inbox: new Set<string>(), chat: new Set<string>(), popup: new Set<string>() };
+
+    const perMethodIds: Record<DeliveryMethod, string[]> = {
+      inbox: methods.includes("inbox") ? baseIds.filter((id) => !exclusions.inbox.has(id)) : [],
+      chat:  methods.includes("chat")  ? baseIds.filter((id) => !exclusions.chat.has(id))  : [],
+      popup: methods.includes("popup") ? baseIds.filter((id) => !exclusions.popup.has(id)) : [],
+    };
+
+    // Per-user effective methods (only methods the user actually receives in this send).
+    const methodsByUser = new Map<string, Set<DeliveryMethod>>();
+    for (const m of methods) {
+      for (const uid of perMethodIds[m]) {
+        const set = methodsByUser.get(uid) ?? new Set<DeliveryMethod>();
+        set.add(m);
+        methodsByUser.set(uid, set);
+      }
+    }
+    const effectiveIds = Array.from(methodsByUser.keys());
+
     const now = new Date().toISOString();
     const { data: row, error } = await asAny(supabaseAdmin)
       .from("broadcasts")
@@ -229,117 +308,136 @@ export const createBroadcast = createServerFn({ method: "POST" })
         target_kind: data.target_kind,
         target_filter: data.target_filter,
         status: "sent",
-        recipient_count: ids.length,
+        recipient_count: effectiveIds.length,
         created_by: context.userId,
         sent_at: now,
+        content_hash: contentHash,
+        skip_duplicates: data.skip_duplicates,
       })
       .select("*")
       .single();
     if (error) throw new Error(error.message);
-    if (ids.length > 0) {
-      const recipientRows = ids.map((uid) => ({ broadcast_id: row.id, user_id: uid }));
+
+    if (effectiveIds.length > 0) {
+      const recipientRows = effectiveIds.map((uid) => ({
+        broadcast_id: row.id,
+        user_id: uid,
+        methods: Array.from(methodsByUser.get(uid) ?? []),
+      }));
       for (const chunk of chunks(recipientRows)) {
         const { error: e2 } = await asAny(supabaseAdmin)
           .from("broadcast_recipients")
           .upsert(chunk, { onConflict: "broadcast_id,user_id" });
         if (e2) throw new Error(`Broadcast recipient delivery failed: ${e2.message}`);
       }
+    }
 
-      const wantsInbox = data.delivery_methods.includes("inbox") || data.delivery_methods.includes("popup");
-      if (wantsInbox) {
-        const notificationRows = ids.map((uid) => ({
-          user_id: uid,
-          source_broadcast_id: row.id,
-          delivery_group_id: row.id,
-          title: `FROM ADMIN: ${data.subject.trim()}`,
-          body: data.body.trim(),
-          message: data.body.trim(),
-          type: "broadcast",
-          priority: notificationPriority(data.priority),
-          audience: "users",
-          status: "unread",
-          sent_at: now,
-          delivered_at: now,
-          recipients_count: 1,
-          delivered_count: 1,
-          created_by: context.userId,
-        }));
-        for (const chunk of chunks(notificationRows)) {
-          await upsertChunkWithRetry(
-            supabaseAdmin,
-            "notifications",
-            chunk,
-            "source_broadcast_id,user_id",
-            "Per-user notification fan-out",
-          );
-        }
-        const delivered = await countBroadcastNotifications(supabaseAdmin, row.id, ids);
-        if (delivered !== ids.length) {
-          throw new Error(`Notification delivery incomplete: ${delivered}/${ids.length} recipients confirmed`);
-        }
+    // Inbox = notifications table (independent of popup).
+    if (methods.includes("inbox") && perMethodIds.inbox.length > 0) {
+      const notificationRows = perMethodIds.inbox.map((uid) => ({
+        user_id: uid,
+        source_broadcast_id: row.id,
+        delivery_group_id: row.id,
+        title: `FROM ADMIN: ${data.subject.trim()}`,
+        body: data.body.trim(),
+        message: data.body.trim(),
+        type: "broadcast",
+        priority: notificationPriority(data.priority),
+        audience: "users",
+        status: "unread",
+        sent_at: now,
+        delivered_at: now,
+        recipients_count: 1,
+        delivered_count: 1,
+        created_by: context.userId,
+      }));
+      for (const chunk of chunks(notificationRows)) {
+        await upsertChunkWithRetry(
+          supabaseAdmin,
+          "notifications",
+          chunk,
+          "source_broadcast_id,user_id",
+          "Per-user notification fan-out",
+        );
       }
+      const delivered = await countBroadcastNotifications(supabaseAdmin, row.id, perMethodIds.inbox);
+      if (delivered !== perMethodIds.inbox.length) {
+        throw new Error(`Notification delivery incomplete: ${delivered}/${perMethodIds.inbox.length} recipients confirmed`);
+      }
+    }
 
-      if (data.delivery_methods.includes("chat")) {
-        const BROADCAST_SUBJECT = "Admin Broadcasts";
-        for (const uidChunk of chunks(ids, 200)) {
-          // Find existing broadcast conversations for these users
-          const { data: existing, error: exErr } = await asAny(supabaseAdmin)
+    if (methods.includes("chat") && perMethodIds.chat.length > 0) {
+      const BROADCAST_SUBJECT = "Admin Broadcasts";
+      for (const uidChunk of chunks(perMethodIds.chat, 200)) {
+        const { data: existing, error: exErr } = await asAny(supabaseAdmin)
+          .from("live_chat_conversations")
+          .select("id,user_id")
+          .in("user_id", uidChunk)
+          .eq("subject", BROADCAST_SUBJECT);
+        if (exErr) throw new Error(`Chat lookup failed: ${exErr.message}`);
+        const byUser = new Map<string, string>(
+          ((existing ?? []) as Array<{ id: string; user_id: string }>).map((c) => [c.user_id, c.id]),
+        );
+        const missing = uidChunk.filter((u) => !byUser.has(u));
+        if (missing.length > 0) {
+          const { data: created, error: cErr } = await asAny(supabaseAdmin)
             .from("live_chat_conversations")
-            .select("id,user_id")
-            .in("user_id", uidChunk)
-            .eq("subject", BROADCAST_SUBJECT);
-          if (exErr) throw new Error(`Chat lookup failed: ${exErr.message}`);
-          const byUser = new Map<string, string>(
-            ((existing ?? []) as Array<{ id: string; user_id: string }>).map((c) => [c.user_id, c.id]),
-          );
-          const missing = uidChunk.filter((u) => !byUser.has(u));
-          if (missing.length > 0) {
-            const { data: created, error: cErr } = await asAny(supabaseAdmin)
-              .from("live_chat_conversations")
-              .insert(missing.map((uid) => ({
-                user_id: uid,
-                subject: BROADCAST_SUBJECT,
-                status: "open",
-                last_message_preview: data.subject.trim(),
-                last_message_at: now,
-              })))
-              .select("id,user_id");
-            if (cErr) throw new Error(`Chat delivery failed: ${cErr.message}`);
-            for (const c of (created ?? []) as Array<{ id: string; user_id: string }>) {
-              byUser.set(c.user_id, c.id);
-            }
+            .insert(missing.map((uid) => ({
+              user_id: uid,
+              subject: BROADCAST_SUBJECT,
+              status: "open",
+              last_message_preview: data.subject.trim(),
+              last_message_at: now,
+            })))
+            .select("id,user_id");
+          if (cErr) throw new Error(`Chat delivery failed: ${cErr.message}`);
+          for (const c of (created ?? []) as Array<{ id: string; user_id: string }>) {
+            byUser.set(c.user_id, c.id);
           }
-          const messages = uidChunk
-            .map((uid) => byUser.get(uid))
-            .filter((cid): cid is string => !!cid)
-            .map((cid) => ({
-              conversation_id: cid,
-              sender_type: "system",
-              sender_user_id: context.userId,
-              body: `📢 FROM ADMIN\n${data.subject.trim()}\n\n${data.body.trim()}`,
-              delivered_at: now,
-            }));
-          if (messages.length) {
-            const { error: mErr } = await asAny(supabaseAdmin).from("live_chat_messages").insert(messages);
-            if (mErr) throw new Error(`Chat message delivery failed: ${mErr.message}`);
-            // Bump conversation unread + last message
-            for (const cid of new Set(messages.map((m) => m.conversation_id))) {
-              await asAny(supabaseAdmin)
-                .from("live_chat_conversations")
-                .update({
-                  last_message_at: now,
-                  last_message_preview: data.subject.trim(),
-                  unread_for_user: 1,
-                })
-                .eq("id", cid);
-            }
+        }
+        const messages = uidChunk
+          .map((uid) => byUser.get(uid))
+          .filter((cid): cid is string => !!cid)
+          .map((cid) => ({
+            conversation_id: cid,
+            sender_type: "system",
+            sender_user_id: context.userId,
+            body: `📢 FROM ADMIN\n${data.subject.trim()}\n\n${data.body.trim()}`,
+            delivered_at: now,
+          }));
+        if (messages.length) {
+          const { error: mErr } = await asAny(supabaseAdmin).from("live_chat_messages").insert(messages);
+          if (mErr) throw new Error(`Chat message delivery failed: ${mErr.message}`);
+          for (const cid of new Set(messages.map((m) => m.conversation_id))) {
+            await asAny(supabaseAdmin)
+              .from("live_chat_conversations")
+              .update({
+                last_message_at: now,
+                last_message_preview: data.subject.trim(),
+                unread_for_user: 1,
+              })
+              .eq("id", cid);
           }
         }
       }
     }
 
-    return { id: row.id, recipient_count: ids.length };
+    return {
+      id: row.id,
+      recipient_count: effectiveIds.length,
+      per_method: {
+        inbox: perMethodIds.inbox.length,
+        chat: perMethodIds.chat.length,
+        popup: perMethodIds.popup.length,
+      },
+      skipped: {
+        inbox: exclusions.inbox.size,
+        chat: exclusions.chat.size,
+        popup: exclusions.popup.size,
+      },
+    };
   });
+
 
 // ---------- LIST / HISTORY ----------
 export const listBroadcasts = createServerFn({ method: "GET" })
@@ -529,7 +627,7 @@ export const listMyBroadcasts = createServerFn({ method: "GET" })
   .handler(async ({ context }) => {
     const { data, error } = await asAny(context.supabase)
       .from("broadcast_recipients")
-      .select("id, broadcast_id, read_at, hidden_at, broadcasts(*)")
+      .select("id, broadcast_id, read_at, hidden_at, methods, broadcasts(*)")
       .eq("user_id", context.userId)
       .is("hidden_at", null)
       .order("delivered_at", { ascending: false })
@@ -537,13 +635,24 @@ export const listMyBroadcasts = createServerFn({ method: "GET" })
     if (error) throw new Error(error.message);
     return ((data ?? []) as any[])
       .filter((r) => r.broadcasts?.visible)
-      .map((r) => ({
-        ...(r.broadcasts as Broadcast),
-        recipient_id: r.id,
-        read_at: r.read_at,
-        hidden_at: r.hidden_at,
-      })) as MyBroadcast[];
+      .map((r) => {
+        const b = r.broadcasts as Broadcast;
+        // Per-user effective methods: prefer the per-recipient `methods`
+        // column (recorded at send time); fall back to broadcast-level
+        // methods for pre-existing rows that predate the column.
+        const effective = Array.isArray(r.methods) && r.methods.length > 0
+          ? (r.methods as string[])
+          : (b?.delivery_methods ?? []);
+        return {
+          ...b,
+          delivery_methods: effective,
+          recipient_id: r.id,
+          read_at: r.read_at,
+          hidden_at: r.hidden_at,
+        };
+      }) as MyBroadcast[];
   });
+
 
 export const markBroadcastRead = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])

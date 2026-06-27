@@ -133,6 +133,8 @@ export function BroadcastManager() {
   const [newPreset, setNewPreset] = useState("7d");
   const [userIds, setUserIds] = useState("");
   const [tplName, setTplName] = useState("");
+  const [skipDuplicates, setSkipDuplicates] = useState(false);
+
 
   const adminAccessQ = useQuery({
     queryKey: ["broadcasts", "admin-access"],
@@ -176,18 +178,23 @@ export function BroadcastManager() {
       return withTimeout(createFn({
         data: {
           subject, body, priority, delivery_methods: methods as ("inbox" | "chat" | "popup")[],
-          target_kind: target, target_filter: filter,
+          target_kind: target, target_filter: filter, skip_duplicates: skipDuplicates,
         },
       }), BROADCAST_QUERY_TIMEOUT_MS, "Broadcast send timed out");
     },
     onSuccess: (r) => {
-      toast.success(`Broadcast sent to ${r.recipient_count} user(s)`);
+      const skippedTotal = (r.skipped?.inbox ?? 0) + (r.skipped?.chat ?? 0) + (r.skipped?.popup ?? 0);
+      const suffix = skipDuplicates && skippedTotal > 0
+        ? ` (skipped ${skippedTotal} previously-sent delivery${skippedTotal === 1 ? "" : "s"})`
+        : "";
+      toast.success(`Broadcast sent to ${r.recipient_count} user(s)${suffix}`);
       setSubject(""); setBody("");
       qc.invalidateQueries({ queryKey: ["broadcasts"] });
       setTab("history");
     },
     onError: (e) => toast.error((e as Error).message),
   });
+
 
   const saveTplMut = useMutation({
     mutationFn: async () => withTimeout(tplCreateFn({
@@ -335,6 +342,23 @@ export function BroadcastManager() {
               <Textarea className="mt-3" rows={3} placeholder="user IDs separated by commas or whitespace"
                 value={userIds} onChange={(e) => setUserIds(e.target.value)} />
             )}
+          </div>
+
+          <div className="flex items-start gap-3 rounded-xl border border-border bg-muted/30 p-3">
+            <input
+              id="broadcast-skip-duplicates"
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 cursor-pointer accent-primary"
+              checked={skipDuplicates}
+              onChange={(e) => setSkipDuplicates(e.target.checked)}
+            />
+            <label htmlFor="broadcast-skip-duplicates" className="cursor-pointer text-xs">
+              <span className="block font-semibold text-foreground">Skip Previously Sent Users</span>
+              <span className="mt-0.5 block text-muted-foreground">
+                When enabled, users who already received this exact broadcast (same subject and message)
+                through any of the selected delivery methods will be skipped for that method.
+              </span>
+            </label>
           </div>
 
           <div className="flex flex-wrap items-center gap-2 border-t border-border pt-4">

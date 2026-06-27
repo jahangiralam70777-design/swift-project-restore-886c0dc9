@@ -447,6 +447,31 @@ export function LiveChatManager() {
                 >
                   {conv.status}
                 </span>
+                {canDeleteConversation && (
+                  <Button
+                    size="icon"
+                    variant="destructive"
+                    className="h-8 w-8"
+                    disabled={deleteConvMut.isPending}
+                    onClick={() => {
+                      if (
+                        confirm(
+                          "Permanently delete this conversation, all its messages, notes and attachments?",
+                        )
+                      ) {
+                        deleteConvMut.mutate(conv.id);
+                      }
+                    }}
+                    aria-label="Delete conversation"
+                    title="Delete conversation"
+                  >
+                    {deleteConvMut.isPending ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-4 w-4" />
+                    )}
+                  </Button>
+                )}
               </div>
             </div>
 
@@ -555,32 +580,41 @@ export function LiveChatManager() {
             {/* Composer */}
             <div className="sticky bottom-0 shrink-0 border-t border-border bg-card px-3 py-3">
               {tab === "reply" ? (
-                <div className="flex items-end gap-2">
-                  <Textarea
-                    value={reply}
-                    onChange={(e) => setReply(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                        e.preventDefault();
-                        if (reply.trim()) replyMut.mutate(reply.trim());
-                      }
-                    }}
-                    placeholder="Type your reply… (Cmd/Ctrl+Enter to send)"
-                    rows={2}
-                    className="flex-1 resize-none"
-                  />
-                  <Button
-                    onClick={() => reply.trim() && replyMut.mutate(reply.trim())}
-                    disabled={!selectedId || !reply.trim() || replyMut.isPending || !perms.canReply}
-                    className="h-10"
-                    title={!perms.canReply ? "Reply permission is required" : "Send reply"}
-                  >
-                    {replyMut.isPending ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Send className="h-4 w-4" />
-                    )}
-                  </Button>
+                <div className="space-y-2">
+                  {perms.failed && (
+                    <p className="text-xs text-destructive">{perms.error}</p>
+                  )}
+                  {!perms.failed && !perms.loading && !perms.canReply && (
+                    <p className="text-xs text-muted-foreground">Reply permission is required.</p>
+                  )}
+                  <div className="flex items-end gap-2">
+                    <Textarea
+                      value={reply}
+                      onChange={(e) => setReply(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                          e.preventDefault();
+                          if (reply.trim() && perms.canReply) replyMut.mutate(reply.trim());
+                        }
+                      }}
+                      placeholder="Type your reply… (Cmd/Ctrl+Enter to send)"
+                      rows={2}
+                      className="flex-1 resize-none"
+                      disabled={perms.loading || replyMut.isPending}
+                    />
+                    <Button
+                      onClick={() => reply.trim() && replyMut.mutate(reply.trim())}
+                      disabled={!selectedId || !reply.trim() || replyMut.isPending || perms.loading || !perms.canReply}
+                      className="h-10"
+                      title={!perms.canReply ? "Reply permission is required" : "Send reply"}
+                    >
+                      {replyMut.isPending || perms.loading ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Send className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </div>
                 </div>
               ) : (
                 <div className="space-y-2">

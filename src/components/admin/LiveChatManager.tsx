@@ -199,6 +199,7 @@ export function LiveChatManager() {
       setReply("");
       qc.invalidateQueries({ queryKey: ["admin", "chat", "messages", selectedId] });
       qc.invalidateQueries({ queryKey: ["admin", "chat", "list"] });
+      qc.invalidateQueries({ queryKey: ["chat", "my-conversations"] });
     },
     onError: (e) => toast.error((e as Error).message),
   });
@@ -285,6 +286,8 @@ export function LiveChatManager() {
   const messages = msgsQ.data ?? [];
   const notes = notesQ.data ?? [];
   const conversations = convsQ.data ?? [];
+  const canDeleteConversation = perms.isAdmin || perms.isSuperAdmin;
+  const canDeleteMessage = perms.isSuperAdmin;
 
   const exportConv = () => {
     if (!conv) return;
@@ -527,7 +530,7 @@ export function LiveChatManager() {
                           {fmtTime(m.created_at)}
                           {isStaff && m.read_at ? " · Seen" : ""}
                         </p>
-                        {perms.canDelete && (
+                        {canDeleteMessage && (
                           <button
                             onClick={() => {
                               if (confirm("Permanently delete this message?")) {
@@ -568,8 +571,9 @@ export function LiveChatManager() {
                   />
                   <Button
                     onClick={() => reply.trim() && replyMut.mutate(reply.trim())}
-                    disabled={!reply.trim() || replyMut.isPending || !perms.canReply}
+                    disabled={!selectedId || !reply.trim() || replyMut.isPending || !perms.canReply}
                     className="h-10"
+                    title={!perms.canReply ? "Reply permission is required" : "Send reply"}
                   >
                     {replyMut.isPending ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
@@ -853,7 +857,7 @@ export function LiveChatManager() {
             )}
 
             {/* Danger zone */}
-            {perms.canDelete && (
+            {canDeleteConversation && (
               <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-2">
                 <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-destructive">
                   Danger zone
@@ -886,7 +890,7 @@ export function LiveChatManager() {
             <div className="mt-auto rounded-lg border border-border bg-muted/30 p-2 text-[11px] text-muted-foreground">
               <Shield className="mr-1 inline h-3 w-3" />
               RLS-isolated per user. Auto-deleted after 30 days of inactivity.
-              {!perms.canDelete && " Only super admins can delete."}
+              {!canDeleteConversation && " Only admins can delete."}
             </div>
           </>
         )}

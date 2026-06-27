@@ -242,8 +242,9 @@ export const getOrCreateMyConversation = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator(noInput)
   .handler(async ({ context }) => {
-    const { supabase, userId } = context;
-    const { data: existing, error: e1 } = await asAny(supabase)
+    const { userId } = context;
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: existing, error: e1 } = await asAny(supabaseAdmin)
       .from("live_chat_conversations")
       .select("*")
       .eq("user_id", userId)
@@ -254,7 +255,7 @@ export const getOrCreateMyConversation = createServerFn({ method: "POST" })
     if (e1) throw new Error(e1.message);
     if (existing) return existing as ChatConversation;
 
-    const { data: created, error: e2 } = await asAny(supabase)
+    const { data: created, error: e2 } = await asAny(supabaseAdmin)
       .from("live_chat_conversations")
       .insert({ user_id: userId, status: "new" })
       .select("*")

@@ -355,8 +355,10 @@ export function BroadcastManager() {
             <label htmlFor="broadcast-skip-duplicates" className="cursor-pointer text-xs">
               <span className="block font-semibold text-foreground">Skip Previously Sent Users</span>
               <span className="mt-0.5 block text-muted-foreground">
-                When enabled, users who already received this exact broadcast (same subject and message)
-                through any of the selected delivery methods will be skipped for that method.
+                When enabled, users who already received THIS broadcast (matched by its
+                persistent campaign identity, not by subject/body) through any of the
+                selected delivery methods will be skipped for that method. New broadcasts
+                that happen to share the same subject/body are NOT treated as duplicates.
               </span>
             </label>
           </div>

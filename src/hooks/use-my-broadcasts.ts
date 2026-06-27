@@ -26,19 +26,35 @@ export function useMyBroadcasts(enabledOpt = true) {
   });
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || !user?.id) return;
     const ch = supabase.channel(`my-broadcasts-${Math.random().toString(36).slice(2, 10)}`);
     ch.on("postgres_changes", { event: "*", schema: "public", table: "broadcasts" }, () =>
       qc.invalidateQueries({ queryKey: MY_BROADCASTS_KEY }),
     );
-    ch.on("postgres_changes", { event: "*", schema: "public", table: "broadcast_recipients" }, () =>
-      qc.invalidateQueries({ queryKey: MY_BROADCASTS_KEY }),
+    ch.on(
+      "postgres_changes",
+      {
+        event: "*",
+        schema: "public",
+        table: "broadcast_recipients",
+        filter: `user_id=eq.${user.id}`,
+      },
+      () => {
+        qc.invalidateQueries({ queryKey: MY_BROADCASTS_KEY });
+        qc.invalidateQueries({ queryKey: ["my-notifications"] });
+      },
+    );
+    ch.on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "notifications", filter: `user_id=eq.${user.id}` },
+      () =>
+        qc.invalidateQueries({ queryKey: ["my-notifications"] }),
     );
     ch.subscribe();
     return () => {
       try { supabase.removeChannel(ch); } catch { /* noop */ }
     };
-  }, [qc, enabled]);
+  }, [qc, enabled, user?.id]);
 
   const markRead = useMutation({
     mutationFn: (recipientId: string) => markFn({ data: { id: recipientId } }),

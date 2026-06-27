@@ -48,14 +48,34 @@ export function useMyNotifications(enabledOpt = true) {
   // the previous channel hasn't been fully removed yet when the next
   // effect runs.
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || !user?.id) return;
     const channelName = `my-notif-live-${Math.random().toString(36).slice(2, 10)}`;
     const ch = supabase.channel(channelName);
-    ch.on("postgres_changes", { event: "*", schema: "public", table: "notifications" }, () =>
-      qc.invalidateQueries({ queryKey: MY_NOTIF_KEY }),
+    ch.on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "notifications", filter: `user_id=eq.${user.id}` },
+      () => {
+        qc.invalidateQueries({ queryKey: MY_NOTIF_KEY });
+        qc.invalidateQueries({ queryKey: ["my-broadcasts"] });
+      },
     );
-    ch.on("postgres_changes", { event: "*", schema: "public", table: "notification_reads" }, () =>
-      qc.invalidateQueries({ queryKey: MY_NOTIF_KEY }),
+    ch.on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "notification_reads", filter: `user_id=eq.${user.id}` },
+      () => qc.invalidateQueries({ queryKey: MY_NOTIF_KEY }),
+    );
+    ch.on(
+      "postgres_changes",
+      {
+        event: "*",
+        schema: "public",
+        table: "broadcast_recipients",
+        filter: `user_id=eq.${user.id}`,
+      },
+      () => {
+        qc.invalidateQueries({ queryKey: MY_NOTIF_KEY });
+        qc.invalidateQueries({ queryKey: ["my-broadcasts"] });
+      },
     );
     ch.subscribe();
     return () => {
@@ -65,7 +85,7 @@ export function useMyNotifications(enabledOpt = true) {
         /* noop */
       }
     };
-  }, [qc, enabled]);
+  }, [qc, enabled, user?.id]);
 
   const markRead = useMutation({
     mutationFn: (id: string) => markFn({ data: { id } }),

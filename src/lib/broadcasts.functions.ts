@@ -1,14 +1,7 @@
-import { createHash } from "crypto";
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { noInput } from "@/lib/validate";
-
-function broadcastContentHash(subject: string, body: string): string {
-  return createHash("sha256")
-    .update(`${subject.trim()}\n\n${body.trim()}`)
-    .digest("hex");
-}
 
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

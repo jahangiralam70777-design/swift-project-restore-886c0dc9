@@ -627,7 +627,7 @@ export const listMyBroadcasts = createServerFn({ method: "GET" })
   .handler(async ({ context }) => {
     const { data, error } = await asAny(context.supabase)
       .from("broadcast_recipients")
-      .select("id, broadcast_id, read_at, hidden_at, broadcasts(*)")
+      .select("id, broadcast_id, read_at, hidden_at, methods, broadcasts(*)")
       .eq("user_id", context.userId)
       .is("hidden_at", null)
       .order("delivered_at", { ascending: false })
@@ -635,13 +635,24 @@ export const listMyBroadcasts = createServerFn({ method: "GET" })
     if (error) throw new Error(error.message);
     return ((data ?? []) as any[])
       .filter((r) => r.broadcasts?.visible)
-      .map((r) => ({
-        ...(r.broadcasts as Broadcast),
-        recipient_id: r.id,
-        read_at: r.read_at,
-        hidden_at: r.hidden_at,
-      })) as MyBroadcast[];
+      .map((r) => {
+        const b = r.broadcasts as Broadcast;
+        // Per-user effective methods: prefer the per-recipient `methods`
+        // column (recorded at send time); fall back to broadcast-level
+        // methods for pre-existing rows that predate the column.
+        const effective = Array.isArray(r.methods) && r.methods.length > 0
+          ? (r.methods as string[])
+          : (b?.delivery_methods ?? []);
+        return {
+          ...b,
+          delivery_methods: effective,
+          recipient_id: r.id,
+          read_at: r.read_at,
+          hidden_at: r.hidden_at,
+        };
+      }) as MyBroadcast[];
   });
+
 
 export const markBroadcastRead = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])

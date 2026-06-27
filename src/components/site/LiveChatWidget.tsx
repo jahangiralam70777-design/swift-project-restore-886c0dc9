@@ -222,7 +222,7 @@ export function LiveChatWidget() {
     queryFn: () => listConvs(),
     enabled: !!authed,
     staleTime: open ? 5_000 : 15_000,
-    refetchInterval: open ? 20_000 : 60_000,
+    refetchInterval: open ? 15_000 : 45_000,
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
     refetchOnReconnect: true,

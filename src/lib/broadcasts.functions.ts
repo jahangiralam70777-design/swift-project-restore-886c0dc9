@@ -208,13 +208,22 @@ const createSchema = z.object({
   target_kind: z.enum(["all_students", "active_users", "new_users", "class", "batch", "course", "users"]),
   target_filter: z.record(z.string(), z.any()).default({}) as unknown as z.ZodType<TargetFilter>,
   skip_duplicates: z.boolean().default(false),
+  // Persistent broadcast identity. Stable across re-sends of the SAME
+  // broadcast. Defaults to a fresh UUID at the DB layer (new campaign) when
+  // omitted. Re-send flows pass the original broadcast's campaign_id.
+  campaign_id: z.string().uuid().optional(),
 });
 
 type DeliveryMethod = "inbox" | "chat" | "popup";
 
+// Skip-duplicates: identity-based, not content-based.
+// Two broadcasts with the SAME subject/body but DIFFERENT campaign_id are
+// independent campaigns and must NOT be treated as duplicates of each other.
+// Only prior sends with the same campaign_id count as duplicates.
 async function computeSkipExclusions(
   supabaseAdmin: any,
-  contentHash: string,
+  campaignId: string,
+  currentBroadcastId: string | null,
   methods: DeliveryMethod[],
   candidateIds: string[],
 ): Promise<Record<DeliveryMethod, Set<string>>> {
@@ -223,10 +232,12 @@ async function computeSkipExclusions(
   };
   if (candidateIds.length === 0) return empty;
 
-  const { data: priors, error: pErr } = await asAny(supabaseAdmin)
+  let priorQ = asAny(supabaseAdmin)
     .from("broadcasts")
     .select("id, delivery_methods")
-    .eq("content_hash", contentHash);
+    .eq("campaign_id", campaignId);
+  if (currentBroadcastId) priorQ = priorQ.neq("id", currentBroadcastId);
+  const { data: priors, error: pErr } = await priorQ;
   if (pErr) throw new Error(`Skip-duplicates prior lookup failed: ${pErr.message}`);
   const priorList = (priors ?? []) as Array<{ id: string; delivery_methods: string[] }>;
   if (priorList.length === 0) return empty;

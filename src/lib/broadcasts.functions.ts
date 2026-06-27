@@ -278,10 +278,12 @@ export const createBroadcast = createServerFn({ method: "POST" })
       supabaseAdmin,
       await resolveRecipients(supabaseAdmin, data.target_kind, data.target_filter),
     );
-    const contentHash = broadcastContentHash(data.subject, data.body);
+    // Identity-based duplicate detection. Resends pass the original
+    // broadcast's campaign_id; brand-new broadcasts mint a fresh one.
+    const campaignId = data.campaign_id ?? crypto.randomUUID();
 
     const exclusions = data.skip_duplicates
-      ? await computeSkipExclusions(supabaseAdmin, contentHash, methods, baseIds)
+      ? await computeSkipExclusions(supabaseAdmin, campaignId, null, methods, baseIds)
       : { inbox: new Set<string>(), chat: new Set<string>(), popup: new Set<string>() };
 
     const perMethodIds: Record<DeliveryMethod, string[]> = {
@@ -315,7 +317,7 @@ export const createBroadcast = createServerFn({ method: "POST" })
         recipient_count: effectiveIds.length,
         created_by: context.userId,
         sent_at: now,
-        content_hash: contentHash,
+        campaign_id: campaignId,
         skip_duplicates: data.skip_duplicates,
       })
       .select("*")

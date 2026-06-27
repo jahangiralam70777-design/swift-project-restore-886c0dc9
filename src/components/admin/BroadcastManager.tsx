@@ -414,6 +414,22 @@ export function BroadcastManager() {
                     </p>
                   </div>
                   <div className="flex shrink-0 gap-1">
+                    <Button size="sm" variant="ghost" title="Resend (skips users who already received this broadcast)" onClick={async () => {
+                      if (!confirm("Re-send this broadcast?\n\nUsers who already received it (per delivery method) will be skipped automatically.")) return;
+                      try {
+                        const r = await createFn({ data: {
+                          subject: b.subject, body: b.body, priority: b.priority,
+                          delivery_methods: (b.delivery_methods as ("inbox" | "chat" | "popup")[]),
+                          target_kind: b.target_kind, target_filter: b.target_filter ?? {},
+                          skip_duplicates: true, campaign_id: b.campaign_id ?? b.id,
+                        } });
+                        const skipped = (r.skipped?.inbox ?? 0) + (r.skipped?.chat ?? 0) + (r.skipped?.popup ?? 0);
+                        toast.success(`Re-sent to ${r.recipient_count} user(s)${skipped ? ` (skipped ${skipped} already-delivered)` : ""}`);
+                        qc.invalidateQueries({ queryKey: ["broadcasts"] });
+                      } catch (e) { toast.error((e as Error).message); }
+                    }}>
+                      <RotateCcw className="h-3.5 w-3.5" />
+                    </Button>
                     <Button size="sm" variant="ghost" onClick={() => pinFn({ data: { id: b.id, pinned: !b.pinned } }).then(() => qc.invalidateQueries({ queryKey: ["broadcasts"] }))}>
                       {b.pinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
                     </Button>

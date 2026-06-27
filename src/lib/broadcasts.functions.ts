@@ -23,6 +23,10 @@ export type TargetFilter = { [k: string]: JsonValue };
 
 export type Broadcast = {
   id: string;
+  // Persistent broadcast identity. Stable across re-sends of the SAME
+  // broadcast; resends inherit the original campaign_id, brand-new broadcasts
+  // get a fresh one. Drives identity-based duplicate detection.
+  campaign_id: string;
   subject: string;
   body: string;
   priority: BroadcastPriority;

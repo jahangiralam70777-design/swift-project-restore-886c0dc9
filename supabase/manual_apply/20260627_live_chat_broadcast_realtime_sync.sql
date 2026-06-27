@@ -11,6 +11,8 @@ grant select, insert, update on public.live_chat_conversations to authenticated;
 grant select, insert, update on public.live_chat_messages to authenticated;
 grant all on public.live_chat_conversations to service_role;
 grant all on public.live_chat_messages to service_role;
+grant select, update on public.broadcast_recipients to authenticated;
+grant all on public.broadcast_recipients to service_role;
 
 -- Columns used by the imported chat UI and broadcast fan-out. These are safe
 -- to re-run and cover projects where only the v1 live-chat migration applied.
@@ -42,6 +44,15 @@ create policy lcm_select on public.live_chat_messages for select
       where c.id = conversation_id
         and (c.user_id = auth.uid() or public.is_chat_staff(auth.uid()))
     )
+  );
+
+drop policy if exists br_select_self on public.broadcast_recipients;
+create policy br_select_self on public.broadcast_recipients for select
+  to authenticated
+  using (
+    user_id = auth.uid()
+    or public.has_role(auth.uid(), 'admin')
+    or public.has_role(auth.uid(), 'super_admin')
   );
 
 -- Keep conversation list ordering, preview text, and unread badges correct

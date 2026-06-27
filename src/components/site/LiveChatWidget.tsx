@@ -54,6 +54,13 @@ export const LIVE_CHAT_DEFAULTS: LiveChatWidgetSettings = {
 };
 
 const SOUND_KEY = "lc_sound_enabled";
+const CHAT_CONVERSATIONS_KEY = ["chat", "my-conversations"] as const;
+
+function sortConversationsByLatest(rows: ChatConversation[]) {
+  return [...rows].sort(
+    (a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime(),
+  );
+}
 
 function timeAgo(iso: string) {
   const diff = Date.now() - new Date(iso).getTime();
@@ -116,26 +123,8 @@ export function LiveChatWidget() {
   const markRead = useServerFn(userMarkRead);
   const hideConv = useServerFn(userHideConversation);
 
-  const hideMut = useMutation({
-    mutationFn: (conversation_id: string) => hideConv({ data: { conversation_id } }),
-    onMutate: async (conversation_id: string) => {
-      await qc.cancelQueries({ queryKey: ["chat", "my-conversations"] });
-      const prev = qc.getQueryData<ChatConversation[]>(["chat", "my-conversations"]);
-      qc.setQueryData<ChatConversation[]>(
-        ["chat", "my-conversations"],
-        (old) => (old ?? []).filter((c) => c.id !== conversation_id),
-      );
-      return { prev };
-    },
-    onError: (_e, _id, ctx) => {
-      if (ctx?.prev) qc.setQueryData(["chat", "my-conversations"], ctx.prev);
-    },
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: ["chat", "my-conversations"] });
-    },
-  });
-
   const [authed, setAuthed] = useState<boolean | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
@@ -148,11 +137,40 @@ export function LiveChatWidget() {
   });
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
+  const refreshConversations = useCallback(() => {
+    qc.invalidateQueries({ queryKey: CHAT_CONVERSATIONS_KEY });
+    void qc.refetchQueries({ queryKey: CHAT_CONVERSATIONS_KEY, type: "active" });
+  }, [qc]);
+
+  const hideMut = useMutation({
+    mutationFn: (conversation_id: string) => hideConv({ data: { conversation_id } }),
+    onMutate: async (conversation_id: string) => {
+      await qc.cancelQueries({ queryKey: CHAT_CONVERSATIONS_KEY });
+      const prev = qc.getQueryData<ChatConversation[]>(CHAT_CONVERSATIONS_KEY);
+      qc.setQueryData<ChatConversation[]>(
+        CHAT_CONVERSATIONS_KEY,
+        (old) => (old ?? []).filter((c) => c.id !== conversation_id),
+      );
+      return { prev };
+    },
+    onError: (_e, _id, ctx) => {
+      if (ctx?.prev) qc.setQueryData(CHAT_CONVERSATIONS_KEY, ctx.prev);
+    },
+    onSettled: refreshConversations,
+  });
+
   // Auth gate
   useEffect(() => {
     let alive = true;
-    supabase.auth.getUser().then(({ data }) => alive && setAuthed(!!data.user));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setAuthed(!!s?.user));
+    supabase.auth.getUser().then(({ data }) => {
+      if (!alive) return;
+      setAuthed(!!data.user);
+      setUserId(data.user?.id ?? null);
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
+      setAuthed(!!s?.user);
+      setUserId(s?.user?.id ?? null);
+    });
     return () => {
       alive = false;
       sub.subscription.unsubscribe();
@@ -200,10 +218,14 @@ export function LiveChatWidget() {
   }) as ChatSettings;
 
   const convsQ = useQuery({
-    queryKey: ["chat", "my-conversations"],
+    queryKey: CHAT_CONVERSATIONS_KEY,
     queryFn: () => listConvs(),
-    enabled: !!authed && open,
-    refetchInterval: open ? 30_000 : false,
+    enabled: !!authed,
+    staleTime: open ? 5_000 : 15_000,
+    refetchInterval: open ? 20_000 : 60_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
   });
 
   const messagesQ = useQuery({
@@ -212,6 +234,77 @@ export function LiveChatWidget() {
     enabled: !!activeConvId && view === "thread",
     staleTime: 5_000,
   });
+
+  // Realtime + fallback refresh: new broadcast chat deliveries create fresh
+  // conversation rows first, then message rows. Listen to both so the picker,
+  // launcher badge, and active thread update without requiring a reload.
+  useEffect(() => {
+    if (!authed || !userId) return;
+    const timers = new Set<number>();
+    const scheduleRefresh = (delayMs: number) => {
+      const run = () => {
+        timers.delete(id);
+        refreshConversations();
+      };
+      const id = window.setTimeout(run, delayMs);
+      timers.add(id);
+    };
+
+    const ch = supabase
+      .channel(`lc-user-convs-${userId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "live_chat_conversations",
+          filter: `user_id=eq.${userId}`,
+        },
+        (payload) => {
+          const eventType = (payload as { eventType?: string }).eventType;
+          const row = ((payload as { new?: unknown; old?: unknown }).new ??
+            (payload as { old?: unknown }).old) as
+            | (ChatConversation & { user_hidden_at?: string | null })
+            | undefined;
+          if (row?.id) {
+            qc.setQueryData<ChatConversation[]>(CHAT_CONVERSATIONS_KEY, (prev = []) => {
+              if (eventType === "DELETE" || row.user_hidden_at) {
+                return prev.filter((c) => c.id !== row.id);
+              }
+              const merged = prev.some((c) => c.id === row.id)
+                ? prev.map((c) => (c.id === row.id ? { ...c, ...row } : c))
+                : [row, ...prev];
+              return sortConversationsByLatest(merged);
+            });
+          }
+          refreshConversations();
+        },
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "broadcast_recipients",
+          filter: `user_id=eq.${userId}`,
+        },
+        (payload) => {
+          const row = ((payload as { new?: unknown }).new ?? {}) as { methods?: string[] | null };
+          if (!row.methods || row.methods.length === 0 || row.methods.includes("chat")) {
+            scheduleRefresh(250);
+            scheduleRefresh(1_500);
+          }
+        },
+      )
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") refreshConversations();
+      });
+
+    return () => {
+      timers.forEach((id) => window.clearTimeout(id));
+      supabase.removeChannel(ch);
+    };
+  }, [authed, userId, qc, refreshConversations]);
 
   // Realtime: incoming messages on any of my conversations
   useEffect(() => {
@@ -229,7 +322,7 @@ export function LiveChatWidget() {
               (prev = []) => (prev.find((x) => x.id === m.id) ? prev : [...prev, m]),
             );
           }
-          qc.invalidateQueries({ queryKey: ["chat", "my-conversations"] });
+          refreshConversations();
           if (m.sender_type === "staff" || m.sender_type === "system") {
             if (!open || view !== "thread" || m.conversation_id !== activeConvId) {
               playPing();
@@ -241,14 +334,14 @@ export function LiveChatWidget() {
     return () => {
       supabase.removeChannel(ch);
     };
-  }, [authed, qc, activeConvId, open, view]);
+  }, [authed, qc, activeConvId, open, view, refreshConversations]);
 
   // Mark read when thread opens
   useEffect(() => {
     if (open && view === "thread" && activeConvId) {
       markRead({ data: { conversation_id: activeConvId } })
         .catch(() => undefined)
-        .finally(() => qc.invalidateQueries({ queryKey: ["chat", "my-conversations"] }));
+        .finally(refreshConversations);
     }
   }, [open, view, activeConvId, markRead, qc]);
 
@@ -271,7 +364,7 @@ export function LiveChatWidget() {
         ["chat", "messages", activeConvId],
         (prev = []) => (prev.find((m) => m.id === msg.id) ? prev : [...prev, msg]),
       );
-      qc.invalidateQueries({ queryKey: ["chat", "my-conversations"] });
+      refreshConversations();
     },
   });
 
@@ -279,7 +372,7 @@ export function LiveChatWidget() {
     mutationFn: async (vars: { subject?: string; first_message?: string }) =>
       startConv({ data: vars }),
     onSuccess: (conv) => {
-      qc.invalidateQueries({ queryKey: ["chat", "my-conversations"] });
+      refreshConversations();
       qc.invalidateQueries({ queryKey: ["chat", "messages", conv.id] });
       setActiveConvId(conv.id);
       setNewSubject("");

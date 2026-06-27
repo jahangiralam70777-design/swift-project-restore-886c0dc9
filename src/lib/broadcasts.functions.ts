@@ -380,9 +380,9 @@ export const createBroadcast = createServerFn({ method: "POST" })
       // Create one fresh conversation per recipient for THIS broadcast so the
       // student widget shows it as a distinct, clearly-labelled thread (and
       // so identity-based dedupe at the broadcast layer is the source of
-      // truth, not chat-thread re-use). sender_type='staff' lets the
-      // rollup trigger increment unread_for_user, which drives the
-      // launcher's unread badge on the student side.
+      // truth, not chat-thread re-use). The unread counter starts at 0 here;
+      // the message insert below uses sender_type='staff', and the live-chat
+      // rollup trigger increments unread_for_user exactly once.
       const chatSubject = `📢 ${data.subject.trim()}`.slice(0, 200);
       const preview = data.subject.trim().slice(0, 200);
       const messageBody = `📢 FROM ADMIN\n${data.subject.trim()}\n\n${data.body.trim()}`;
@@ -396,7 +396,7 @@ export const createBroadcast = createServerFn({ method: "POST" })
             status: "waiting_user",
             last_message_preview: preview,
             last_message_at: now,
-            unread_for_user: 1,
+            unread_for_user: 0,
             metadata: { source: "broadcast", broadcast_id: row.id, campaign_id: campaignId },
           })))
           .select("id,user_id");

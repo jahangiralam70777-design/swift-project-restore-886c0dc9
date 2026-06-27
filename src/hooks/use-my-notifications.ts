@@ -19,6 +19,7 @@ export type MyNotification = {
   sent_at: string | null;
   created_at: string;
   read: boolean;
+  source_broadcast_id?: string | null;
 };
 
 export const MY_NOTIF_KEY = ["my-notifications"] as const;
@@ -47,14 +48,34 @@ export function useMyNotifications(enabledOpt = true) {
   // the previous channel hasn't been fully removed yet when the next
   // effect runs.
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || !user?.id) return;
     const channelName = `my-notif-live-${Math.random().toString(36).slice(2, 10)}`;
     const ch = supabase.channel(channelName);
-    ch.on("postgres_changes", { event: "*", schema: "public", table: "notifications" }, () =>
-      qc.invalidateQueries({ queryKey: MY_NOTIF_KEY }),
+    ch.on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "notifications", filter: `user_id=eq.${user.id}` },
+      () => {
+        qc.invalidateQueries({ queryKey: MY_NOTIF_KEY });
+        qc.invalidateQueries({ queryKey: ["my-broadcasts"] });
+      },
     );
-    ch.on("postgres_changes", { event: "*", schema: "public", table: "notification_reads" }, () =>
-      qc.invalidateQueries({ queryKey: MY_NOTIF_KEY }),
+    ch.on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "notification_reads", filter: `user_id=eq.${user.id}` },
+      () => qc.invalidateQueries({ queryKey: MY_NOTIF_KEY }),
+    );
+    ch.on(
+      "postgres_changes",
+      {
+        event: "*",
+        schema: "public",
+        table: "broadcast_recipients",
+        filter: `user_id=eq.${user.id}`,
+      },
+      () => {
+        qc.invalidateQueries({ queryKey: MY_NOTIF_KEY });
+        qc.invalidateQueries({ queryKey: ["my-broadcasts"] });
+      },
     );
     ch.subscribe();
     return () => {
@@ -64,7 +85,7 @@ export function useMyNotifications(enabledOpt = true) {
         /* noop */
       }
     };
-  }, [qc, enabled]);
+  }, [qc, enabled, user?.id]);
 
   const markRead = useMutation({
     mutationFn: (id: string) => markFn({ data: { id } }),
@@ -79,7 +100,26 @@ export function useMyNotifications(enabledOpt = true) {
     onError: (_e, _id, ctx) => {
       if (ctx?.prev) qc.setQueryData(MY_NOTIF_KEY, ctx.prev);
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: MY_NOTIF_KEY }),
+    onSuccess: (result) => {
+      const recipientIds = Array.isArray(result?.broadcast_recipient_ids)
+        ? result.broadcast_recipient_ids
+        : [];
+      if (recipientIds.length > 0) {
+        qc.setQueryData<Array<{ recipient_id: string; read_at: string | null }>>(
+          ["my-broadcasts"],
+          (old) =>
+            (old ?? []).map((b) =>
+              recipientIds.includes(b.recipient_id)
+                ? { ...b, read_at: b.read_at ?? new Date().toISOString() }
+                : b,
+            ),
+        );
+      }
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: MY_NOTIF_KEY });
+      qc.invalidateQueries({ queryKey: ["my-broadcasts"] });
+    },
   });
 
   const markAll = useMutation({
@@ -95,7 +135,16 @@ export function useMyNotifications(enabledOpt = true) {
     onError: (_e, _v, ctx) => {
       if (ctx?.prev) qc.setQueryData(MY_NOTIF_KEY, ctx.prev);
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: MY_NOTIF_KEY }),
+    onSuccess: () => {
+      qc.setQueryData<Array<{ recipient_id: string; read_at: string | null }>>(
+        ["my-broadcasts"],
+        (old) => (old ?? []).map((b) => ({ ...b, read_at: b.read_at ?? new Date().toISOString() })),
+      );
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: MY_NOTIF_KEY });
+      qc.invalidateQueries({ queryKey: ["my-broadcasts"] });
+    },
   });
 
   const items = q.data ?? [];

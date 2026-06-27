@@ -585,12 +585,17 @@ function Mini({ label, value }: { label: string; value: number }) {
 function BroadcastsInbox() {
   const { items, unread, markRead, hide } = useMyBroadcasts();
   const [expanded, setExpanded] = useState(false);
+  const [selected, setSelected] = useState<MyBroadcast | null>(null);
   if (!items.length) return null;
   const sorted = [...items].sort((a, b) => {
     if (!!a.read_at !== !!b.read_at) return a.read_at ? 1 : -1;
     return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
   });
   const shown = expanded ? sorted : sorted.slice(0, 3);
+  const openBroadcast = (broadcast: MyBroadcast) => {
+    if (!broadcast.read_at) markRead.mutate(broadcast.recipient_id);
+    setSelected({ ...broadcast, read_at: broadcast.read_at ?? new Date().toISOString() });
+  };
   return (
     <div className="glass shadow-card-soft rounded-2xl p-4">
       <div className="mb-3 flex items-center justify-between gap-2">
@@ -631,6 +636,11 @@ function BroadcastsInbox() {
                 {b.priority === "urgent" ? "Urgent" : b.priority === "important" ? "Important" : "Notice"}
               </div>
               <div className="min-w-0 flex-1">
+                <button
+                  type="button"
+                  onClick={() => openBroadcast(b)}
+                  className="block w-full text-left"
+                >
                 <div className="flex items-center gap-2">
                   <p className="truncate text-sm font-semibold">{b.subject}</p>
                   {!b.read_at ? (
@@ -641,8 +651,15 @@ function BroadcastsInbox() {
                 <p className="mt-1 text-[10px] uppercase tracking-wider text-muted-foreground">
                   {b.sender_name ?? "Admin"} · {new Date(b.sent_at ?? b.created_at).toLocaleString()}
                 </p>
+                </button>
               </div>
               <div className="flex shrink-0 items-center gap-1">
+                <button
+                  onClick={() => openBroadcast(b)}
+                  className="rounded-md border border-border/60 px-2 py-1 text-[10px] text-foreground/80 hover:text-foreground"
+                >
+                  Open
+                </button>
                 {!b.read_at ? (
                   <button
                     onClick={() => markRead.mutate(b.recipient_id)}
@@ -668,6 +685,92 @@ function BroadcastsInbox() {
           );
         })}
       </ul>
+      {selected && (
+        <BroadcastDetailModal
+          b={selected}
+          onClose={() => setSelected(null)}
+          onDismiss={() => {
+            setSelected(null);
+            hide.mutate(selected.recipient_id);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function BroadcastDetailModal({
+  b,
+  onClose,
+  onDismiss,
+}: {
+  b: MyBroadcast;
+  onClose: () => void;
+  onDismiss: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = "";
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6"
+      role="dialog"
+      aria-modal="true"
+      onClick={onClose}
+    >
+      <div className="absolute inset-0 bg-background/70 backdrop-blur-md" />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="glass shadow-card-soft relative w-full max-w-lg overflow-hidden rounded-3xl border border-border/70 p-6 animate-in fade-in zoom-in-95 duration-200"
+      >
+        <button
+          onClick={onClose}
+          className="absolute right-4 top-4 rounded-full border border-border/60 bg-background/40 p-1.5 text-muted-foreground hover:text-foreground"
+          aria-label="Close"
+        >
+          <X className="h-4 w-4" />
+        </button>
+        <div className="flex items-start gap-3 pr-8">
+          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[var(--neon-purple)]/15 text-[var(--neon-purple)] ring-1 ring-white/10">
+            <Megaphone className="h-6 w-6" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <span className="rounded-full border border-border/60 bg-background/40 px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+              Broadcast
+            </span>
+            <h2 className="mt-2 font-display text-xl font-bold leading-tight">{b.subject}</h2>
+            <p className="mt-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+              {b.sender_name ?? "Admin"} · {new Date(b.sent_at ?? b.created_at).toLocaleString()}
+            </p>
+          </div>
+        </div>
+        <div className="mt-4 max-h-[40vh] overflow-y-auto whitespace-pre-wrap rounded-2xl border border-border/50 bg-background/30 p-4 text-sm leading-relaxed text-foreground/90">
+          {b.body}
+        </div>
+        <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
+          <button
+            onClick={onDismiss}
+            className="flex items-center gap-1.5 rounded-xl border border-border/60 bg-background/40 px-3 py-2 text-xs text-foreground/80 hover:text-foreground"
+          >
+            <Trash2 className="h-3.5 w-3.5" /> Delete from inbox
+          </button>
+          <button
+            onClick={onClose}
+            className="bg-cta-gradient rounded-xl px-4 py-2 text-xs font-semibold text-white shadow-glow"
+          >
+            Done
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

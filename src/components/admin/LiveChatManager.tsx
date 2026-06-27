@@ -254,16 +254,27 @@ export function LiveChatManager() {
   });
 
   const deleteConvMut = useMutation({
-    mutationFn: async () => {
-      if (!selectedId) throw new Error("No conversation");
-      return deleteConvFn({ data: { conversation_id: selectedId } });
+    mutationFn: async (conversationId: string) => {
+      return deleteConvFn({ data: { conversation_id: conversationId } });
+    },
+    onMutate: async (conversationId) => {
+      await qc.cancelQueries({ queryKey: ["admin", "chat", "list"] });
+      qc.setQueriesData<ChatConversation[]>(
+        { queryKey: ["admin", "chat", "list"] },
+        (old) => (old ?? []).filter((c) => c.id !== conversationId),
+      );
+      setSelectedId((cur) => (cur === conversationId ? null : cur));
+      return { conversationId };
     },
     onSuccess: () => {
       toast.success("Conversation deleted");
-      setSelectedId(null);
       qc.invalidateQueries({ queryKey: ["admin", "chat", "list"] });
     },
-    onError: (e) => toast.error((e as Error).message),
+    onError: (e, _id, ctx) => {
+      if (ctx?.conversationId) setSelectedId(ctx.conversationId);
+      qc.invalidateQueries({ queryKey: ["admin", "chat", "list"] });
+      toast.error((e as Error).message);
+    },
   });
 
   const conv = detailQ.data?.conversation ?? null;
@@ -858,7 +869,7 @@ export function LiveChatManager() {
                         "Permanently delete this conversation, all its messages, notes and attachments?",
                       )
                     ) {
-                      deleteConvMut.mutate();
+                      deleteConvMut.mutate(conv.id);
                     }
                   }}
                 >

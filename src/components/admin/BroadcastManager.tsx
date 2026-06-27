@@ -436,7 +436,10 @@ export function BroadcastManager() {
                     </p>
                   </div>
                   <div className="flex shrink-0 gap-1">
-                    <Button size="sm" variant="ghost" title="Resend (skips users who already received this broadcast)" onClick={async () => {
+                    <Button size="sm" variant="ghost" title="Edit (creates a brand-new broadcast with a new campaign_id)" onClick={() => editBroadcast(b)}>
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button size="sm" variant="ghost" title="Resend (reuses this broadcast's campaign_id; skip-duplicates respected)" onClick={async () => {
                       if (!confirm("Re-send this broadcast?\n\nUsers who already received it (per delivery method) will be skipped automatically.")) return;
                       try {
                         const r = await createFn({ data: {
